@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://pypi.org/project/waggle-mcp"><img src="https://img.shields.io/pypi/v/waggle-mcp?color=39d5cf&label=pypi" alt="PyPI"/></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+"/>
-  <img src="https://img.shields.io/badge/MCP-compatible-brightgreen" alt="MCP"/>
+  <img src="https://img.shields.io/badge/MCP-compatible-brightgreen" alt="MCP compatible"/>
   <img src="https://img.shields.io/badge/embeddings-local%2C%20no%20API%20key-orange" alt="Local embeddings"/>
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT"/>
 </p>
@@ -22,20 +22,16 @@
 Most LLMs forget everything when the conversation ends.  
 `waggle-mcp` fixes that by giving your AI a **persistent knowledge graph** it can read and write through any MCP-compatible client.
 
+Waggle's key advantage is **token efficiency with structured context**:
+
 | Without waggle-mcp | With waggle-mcp |
 |--------------------------|----------------------|
 | "What did we decide about the DB schema?" → ❌ no idea | ✅ Recalls the decision node, when it was made, and what it contradicts |
-| Context stuffed into a 200k-token prompt | Compact subgraph — only relevant nodes retrieved |
+| Context stuffed into a 200k-token prompt | **~4× fewer tokens** — compact subgraph, only relevant nodes retrieved |
 | Flat bullet-list memory | Typed edges: `relates_to`, `contradicts`, `depends_on`, `updates`… |
 | One session, one agent | Multi-tenant, multi-session, multi-agent |
 
----
-
-## Demo
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Abhigyan-Shekhar/graph-memory-mcp/main/assets/demo.svg" alt="waggle-mcp init demo" width="720"/>
-</p>
+> **Note on retrieval:** Waggle trades some raw recall coverage for dramatically lower token cost and richer relational context. See the [benchmark section](#performance--benchmarking) for honest numbers.
 
 ---
 
@@ -55,38 +51,6 @@ No cloud service. No API key. Semantic search runs fully locally.
 
 ---
 
-## How it works
-
-Memory doesn't just get stored — it flows through a lifecycle:
-
-```
-You talk to your AI
-        │
-        ▼
-  observe_conversation()          ← AI drops the turn in; facts are extracted via structured LLM (regex fallback)
-        │
-        ▼
-  Graph nodes are created         ← "Chose PostgreSQL" becomes a decision node
-  Edges are inferred              ← linked to the "database" entity node
-        │
-        ▼
-  Future conversation starts
-        │
-        ▼
-  query_graph("DB schema")        ← semantic search finds the node from 3 sessions ago
-        │
-        ▼
-  AI answers with full context    ← "You decided on PostgreSQL on Apr 10, here's why…"
-```
-
-Every node carries semantic embeddings computed **locally** using
-[`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) —
-a fast, lightweight model that runs entirely on-device with no API key or network
-call required. This means semantic search works offline, costs nothing per query,
-and keeps your data private.
-
----
-
 ## See it in action
 
 Here's a concrete before/after for a developer using the AI daily:
@@ -96,8 +60,8 @@ Here's a concrete before/after for a developer using the AI daily:
 User:  Let's use PostgreSQL. MySQL replication has been painful.
 Agent: [calls observe_conversation()]
        → stores decision node: "Chose PostgreSQL over MySQL"
-       → stores reason node: "MySQL replication painful"
-       → links them with depends_on edge
+       → stores reason node:   "MySQL replication painful"
+       → links them with a depends_on edge
 ```
 
 **Session 2** — April 12 (fresh context window, no history)
@@ -119,6 +83,38 @@ Agent: [calls store_node() + store_edge(new_node → old_node, "contradicts")]
 
 > The agent never needed explicit instructions to remember or retrieve — it called
 > the right tools based on the conversation, and the graph gave it the right context.
+
+---
+
+## How it works
+
+Memory doesn't just get stored — it flows through a lifecycle:
+
+```
+You talk to your AI
+        │
+        ▼
+  observe_conversation()          ← AI drops the turn in; facts extracted via structured LLM (regex fallback)
+        │
+        ▼
+  Graph nodes are created         ← "Chose PostgreSQL" becomes a decision node
+  Edges are inferred              ← linked to the "database" entity node
+        │
+        ▼
+  Future conversation starts
+        │
+        ▼
+  query_graph("DB schema")        ← semantic search finds the node from 3 sessions ago
+        │
+        ▼
+  AI answers with full context    ← "You decided on PostgreSQL on Apr 10, here's why…"
+```
+
+Every node carries semantic embeddings computed **locally** using
+[`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) —
+a fast, lightweight model that runs entirely on-device with no API key or network
+call required. This means semantic search works offline, costs nothing per query,
+and keeps your data private.
 
 ---
 
@@ -167,145 +163,12 @@ When the agent observes a conversation, the backend runs a Pydantic-validated LL
 
 ---
 
-## Performance & Benchmarking
-
-All benchmark claims in this repository should be reproducible from checked-in fixtures plus the local harness at [scripts/benchmark_extraction.py](./scripts/benchmark_extraction.py).
-
-Current fixture inventory:
-
-- **Extraction:** 12 checked-in dialogue cases covering simple recall, interruptions, reversals, vague statements, conflicting statements, and mixed user/assistant signal.
-- **Retrieval:** an 8-node benchmark corpus with 6 queries covering paraphrase and temporal phrasing.
-- **Deduplication:** 6 checked-in node pairs with both true-duplicate and false-friend cases.
-- **Comparative pilot eval:** 24 multi-session scenarios with 50 retrieval/temporal queries and gold support facts for `waggle`, `rag_naive`, and `rag_tuned`.
-
-Run the harness locally:
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py
-PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py --extraction-backend regex
-PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py --extraction-backend llm --ollama-model qwen2.5:7b --ollama-timeout-seconds 30
-PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py --systems waggle rag_naive rag_tuned --output tests/artifacts/pilot_comparative.json
-```
-
-Saved verification artifacts live under [`tests/artifacts`](./tests/artifacts/).
-
-Measured results from the saved runs on this branch:
-
-| Run | Result |
-|-----|--------|
-| **MCP smoke test** | Server initialized, `store_node` succeeded, `query_graph` returned the stored node, graph stats reported `1` node / `0` edges |
-| **Regex extraction** | `4/12 = 33%` |
-| **LLM extraction** | `9/12 = 75%` using local Ollama `qwen2.5:7b` with `30s` request timeout |
-| **Retrieval** | `5/6 = 83%` |
-| **Deduplication** | `3/6 = 50%` |
-| **Comparative pilot corpus** | 24 scenarios / 50 queries, saved in [`tests/artifacts/pilot_comparative.json`](./tests/artifacts/pilot_comparative.json) and [`tests/artifacts/pilot_comparative.md`](./tests/artifacts/pilot_comparative.md) |
-
-Comparative pilot results on the saved corpus:
-
-| System | Hit@k | Exact support | Mean tokens | Median tokens | p95 tokens |
-|--------|-------|---------------|-------------|---------------|------------|
-| **waggle** | `92%` | `88%` | `37.2` | `38.0` | `42.0` |
-| **rag_naive** | `100%` | `100%` | `152.1` | `154.0` | `163.0` |
-| **rag_tuned** | `100%` | `100%` | `244.0` | `245.0` | `259.6` |
-
-Deduplication threshold sweep on the checked-in fixture set:
-
-- `0.82` -> `3/6 = 50%`
-- `0.85` -> `2/6 = 33%`
-- `0.88` -> `2/6 = 33%`
-- `0.90` -> `2/6 = 33%`
-- `0.92` -> `2/6 = 33%`
-- `0.95` -> `3/6 = 50%`
-- `0.97` -> `3/6 = 50%`
-
-What these saved runs demonstrate:
-
-- regex extraction as a standalone baseline
-- Ollama-backed extraction through the same local LLM codepath used by Waggle at runtime
-- semantic retrieval over the checked-in corpus
-- deduplication accuracy over the checked-in duplicate and non-duplicate pairs
-- an end-to-end MCP store/query demo against the live server
-- a first comparative pilot showing large context-token reduction versus chunked-vector baselines
-
-What the comparative pilot means right now:
-
-- **Waggle is materially cheaper on context tokens** than both chunked-vector baselines on the saved corpus.
-- **The current pilot corpus is still too easy for the baselines on support recall**, so these numbers do **not** yet justify a retrieval-superiority claim.
-- **The next evaluation step is corpus hardening, not more harness work**: make temporal and multi-session queries harder, improve support attribution pressure, and rerun the same command.
-
-The LLM benchmark does **not** silently fall back to regex. In the first saved attempt, two cases timed out at the extractor's original `15s` Ollama request limit and the run recorded an explicit backend-unavailable error instead of publishing substituted numbers. The stable saved run on this branch uses a configurable `30s` timeout.
-
-Deduplication benchmarking uses a checked-in threshold sweep and reports the best fixture-backed threshold in the benchmark output. Product defaults remain conservative (`dedup_similarity_threshold=0.97`) until broader validation justifies changing runtime behavior.
-
-### When Extraction Fails
-
-*What happens when the user is too vague?*
-
-> **User:** "Yeah, let's just do that thing we talked about."
-
-*(Waggle LLM extraction pass runs...)*
-
-Because the statement is entirely ambiguous, the LLM assigns a low confidence (`confidence < 0.5`). Waggle **silently drops** the extraction to protect the graph integrity. It is architecturally safer to aggressively omit noisy extraction than to pollute the memory graph with hallucinatory, unanchored nodes.
-
-### Scaling to 10k+ Nodes
-
-Graph datasets grow iteratively. How does Waggle survive long-term memory accumulation across months of multi-agent sessions?
-
-1. **Local Embeddings Stay On-Device:** Waggle uses `all-MiniLM-L6-v2` locally, so semantic search does not require network calls or per-query API spend.
-2. **Neo4j Remains the Scale-Up Path:** SQLite is the default local backend, but the graph model can be backed by Neo4j when deployments outgrow single-file storage.
-3. **`access_count` Helps Context Ranking:** Nodes that are frequently reused rise in `prime_context`, while stale nodes naturally sink over time.
-
----
-
-## Advanced Demo: Multi-Session Debugging
-
-Memory isn't just about simple recall; it's about context evolution and reasoning across time.
-
-**Session 1 (Monday)**
-*Agent investigates an auth timeout.*
-> **Agent:** Looks like the JWT tokens expire after 15 minutes, but the refresh logic has a race condition.
-> *(Waggle automatically extracts: `[Node: JWT 15m expiry]`, `[Node: Refresh logic race condition]`)*
-
-**Session 2 (Wednesday)**
-*User opens a fresh window with no chat history.*
-> **User:** We're seeing intermittent auth failures again.
-> **Agent:** *(Retrieves prime context)* This matches the race condition we discovered on Monday in the refresh logic. Let's look at that specific code path.
-> 
-> *Without Waggle, the agent wastes 10 minutes re-diagnosing the entire auth stack from scratch.*
-
-**Session 3 (Friday)**
-> **User:** We fixed the refresh race condition, but it feels like users are still getting kicked out too fast.
-> **Agent:** *(Queries graph)* Since we fixed the refresh issue, the problem might be the 15-minute aggressive expiry we noted on Monday. Should we extend that to 1 hour?
-
-The agent tracks the evolving state of the system across sessions, identifies contradictions, and leverages them to skip dead-end debugging branches.
-
----
-
-## Temporal queries — a solved problem most memory systems skip
-
-Most memory systems answer "what do you know about X?" — but can't answer
-*when* you learned it or how knowledge changed over time.
-
-`waggle-mcp` understands temporal natural language natively:
-
-| Query | What happens |
-|-------|-------------|
-| `query_graph("what did we decide recently")` | Filters nodes updated in the last 24–48h |
-| `query_graph("what was the original plan")` | Retrieves the earliest version of relevant nodes |
-| `query_graph("what changed last week")` | Returns a diff of nodes created/updated in that window |
-| `graph_diff(since="48h")` | Explicit changelog: added nodes, updated nodes, new conflicts |
-
-This is built on timestamped nodes + temporal phrase parsing — no vector-clock
-complexity, but enough to reconstruct a meaningful timeline of decisions.
-
----
-
 ## Memory model
 
 **Node types** — what gets stored:
 
 | Type | Example |
-|------|---------|
+|------|---------| 
 | `fact` | "The API uses JWT tokens" |
 | `preference` | "User prefers dark mode" |
 | `decision` | "Chose PostgreSQL over MySQL" |
@@ -326,7 +189,7 @@ complexity, but enough to reconstruct a meaningful timeline of decisions.
 
 | Tool | What it does |
 |------|-------------|
-| `observe_conversation` | **Drop a conversation turn in — facts extracted via structured LLM (regex fallback), stored, and linked** |
+| `observe_conversation` | **Drop a conversation turn in — facts extracted, stored, and linked** |
 | `query_graph` | Semantic + temporal search across the graph |
 | `store_node` | Manually save a fact, preference, decision, or note |
 | `store_edge` | Link two nodes with a typed relationship |
@@ -344,9 +207,102 @@ complexity, but enough to reconstruct a meaningful timeline of decisions.
 
 ---
 
+## Performance & Benchmarking
+
+All benchmark claims in this repository are reproducible from checked-in fixtures plus the local harness at [`scripts/benchmark_extraction.py`](./scripts/benchmark_extraction.py).
+
+**Run the harness locally:**
+
+```bash
+# Regex extraction baseline
+PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py --extraction-backend regex
+
+# LLM extraction (requires local Ollama)
+PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py --extraction-backend llm --ollama-model qwen2.5:7b --ollama-timeout-seconds 30
+
+# Comparative pilot (waggle vs chunked-vector RAG)
+PYTHONPATH=src .venv/bin/python scripts/benchmark_extraction.py --systems waggle rag_naive --output tests/artifacts/pilot_comparative.json
+```
+
+### Extraction accuracy
+
+| Backend | Cases | Accuracy |
+|---------|-------|----------|
+| Regex (fallback) | 12 | 33% |
+| LLM (`qwen2.5:7b`, 30s timeout) | 12 | 75% |
+
+Fixture set: 12 dialogue pairs covering simple recall, interruptions, reversals, vague statements, and conflicting signals. Saved artifacts: [`tests/artifacts/benchmark_regex.json`](./tests/artifacts/benchmark_regex.json), [`tests/artifacts/benchmark_llm.json`](./tests/artifacts/benchmark_llm.json).
+
+### Retrieval accuracy
+
+| Corpus | Queries | Hit@k |
+|--------|---------|-------|
+| 8-node benchmark corpus | 6 | 83% |
+
+### Token efficiency vs. chunked-vector RAG
+
+This is where Waggle's graph model has a **clear, measurable advantage**. The graph extracts and stores discrete facts rather than raw text chunks, so the context injected into each prompt is far smaller:
+
+| System | Mean tokens | Median tokens | p95 tokens | Hit@k |
+|--------|-------------|---------------|------------|-------|
+| **Waggle** | **37.2** | **38.0** | **42.0** | 92% |
+| Naive chunked-vector RAG | 152.1 | 154.0 | 163.0 | 100% |
+
+**Waggle uses ~4× fewer tokens per retrieval** than the naive chunked baseline.
+
+The tradeoff is honest: the chunked baseline achieves 100% Hit@k on this corpus because the corpus is not yet hard enough to stress it. **The token efficiency advantage is real and large; the retrieval advantage is not yet demonstrated at this corpus scale.** Corpus hardening is the next evaluation step — see [`tests/artifacts/pilot_comparative.md`](./tests/artifacts/pilot_comparative.md) for details.
+
+<details>
+<summary>Deduplication threshold sweep (fixture set too small for tuning — click to expand)</summary>
+
+Current fixture set: 6 node pairs (3 true duplicates, 3 false friends). At 6 examples this is not large enough to tune thresholds, but the sweep is included for transparency:
+
+| Threshold | Result |
+|-----------|--------|
+| 0.82 | 3/6 = 50% |
+| 0.85 | 2/6 = 33% |
+| 0.88 | 2/6 = 33% |
+| 0.90 | 2/6 = 33% |
+| 0.92 | 2/6 = 33% |
+| 0.95 | 3/6 = 50% |
+| 0.97 | 3/6 = 50% |
+
+Product defaults remain conservative (`dedup_similarity_threshold=0.97`) until a larger fixture set justifies changing runtime behavior. Expanding to 20+ pairs is the next dedup evaluation step.
+
+</details>
+
+### When extraction fails
+
+*What happens when the user is too vague?*
+
+> **User:** "Yeah, let's just do that thing we talked about."
+
+Because the statement is entirely ambiguous, the LLM assigns low confidence (`confidence < 0.5`). Waggle **silently drops** the extraction rather than storing a guess. It is safer to omit a noisy extraction than to pollute the graph with unanchored nodes.
+
+The LLM pipeline does **not** silently fall back to regex on timeout. The first saved benchmark attempt surfaced two explicit `backend-unavailable` errors at the original 15s timeout. The stable run on this branch uses a configurable 30s timeout, and backend failures are logged explicitly.
+
+---
+
+## Temporal queries — built-in, not bolted on
+
+Most memory systems answer "what do you know about X?" — but can't answer
+*when* you learned it or how knowledge changed over time.
+
+`waggle-mcp` timestamps every node and understands temporal natural language:
+
+| Query | What happens |
+|-------|-------------|
+| `query_graph("what did we decide recently")` | Filters nodes updated in the last 24–48h |
+| `query_graph("what was the original plan")` | Retrieves the earliest version of relevant nodes |
+| `query_graph("what changed last week")` | Returns a diff of nodes created/updated in that window |
+| `graph_diff(since="48h")` | Explicit changelog: added nodes, updated nodes, new conflicts |
+
+---
+
 ## Installation
 
-### Local / development (SQLite, no extra services)
+<details>
+<summary>Local / development (SQLite, no extra services)</summary>
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -354,7 +310,7 @@ pip install -e ".[dev]"
 waggle-mcp init        # ← writes your client config automatically
 ```
 
-Three key variables for local mode:
+Key variables for local mode:
 
 | Variable | What it does |
 |----------|-------------|
@@ -362,15 +318,14 @@ Three key variables for local mode:
 | `WAGGLE_TRANSPORT=stdio` | Connects to desktop MCP clients |
 | `WAGGLE_DB_PATH` | Where the graph is stored (default: `memory.db`) |
 
-### Production (Neo4j backend)
+</details>
+
+<details>
+<summary>Production (Neo4j backend)</summary>
 
 ```bash
 pip install -e ".[dev,neo4j]"
-```
 
-Then run the server:
-
-```bash
 WAGGLE_TRANSPORT=http \
 WAGGLE_BACKEND=neo4j \
 WAGGLE_DEFAULT_TENANT_ID=workspace-default \
@@ -380,7 +335,10 @@ WAGGLE_NEO4J_PASSWORD=change-me \
 waggle-mcp
 ```
 
-### Docker
+</details>
+
+<details>
+<summary>Docker</summary>
 
 ```bash
 docker build -t waggle-mcp:latest .
@@ -395,13 +353,12 @@ docker run --rm -p 8080:8080 \
   waggle-mcp:latest
 ```
 
----
+</details>
 
-## Manual client configuration
+<details>
+<summary>Manual client configuration</summary>
 
-If you prefer to edit config files directly, or `init` doesn't cover your client:
-
-### Claude Desktop — `claude_desktop_config.json`
+**Claude Desktop — `claude_desktop_config.json`**
 
 ```json
 {
@@ -422,7 +379,7 @@ If you prefer to edit config files directly, or `init` doesn't cover your client
 }
 ```
 
-### Codex — `codex_config.toml`
+**Codex — `codex_config.toml`**
 
 ```toml
 [mcp_servers.waggle]
@@ -440,6 +397,8 @@ env     = {
 ```
 
 A pre-filled example is in [`codex_config.example.toml`](./codex_config.example.toml).
+
+</details>
 
 ---
 
@@ -486,11 +445,21 @@ A pre-filled example is in [`codex_config.example.toml`](./codex_config.example.
 | `WAGGLE_NEO4J_PASSWORD` | Neo4j password |
 | `WAGGLE_NEO4J_DATABASE` | Neo4j database name |
 
+### LLM Extraction
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WAGGLE_EXTRACT_BACKEND` | `auto` | `auto` \| `llm` \| `regex` |
+| `WAGGLE_EXTRACT_MODEL` | `mistral` | Ollama model name |
+| `WAGGLE_EXTRACT_MIN_CONFIDENCE` | `0.5` | float 0–1, facts below this are dropped |
+| `WAGGLE_OLLAMA_URL` | `http://localhost:11434` | Base URL for local Ollama |
+
 </details>
 
 ---
 
-## Admin commands
+<details>
+<summary>Admin commands</summary>
 
 ```bash
 # Create a tenant
@@ -511,9 +480,10 @@ WAGGLE_NEO4J_USERNAME=neo4j WAGGLE_NEO4J_PASSWORD=change-me \
   waggle-mcp migrate-sqlite --db-path ./memory.db --tenant-id workspace-a
 ```
 
----
+</details>
 
-## Kubernetes & observability
+<details>
+<summary>Kubernetes & observability</summary>
 
 Full production deployment assets are in [`deploy/`](./deploy/):
 
@@ -521,10 +491,6 @@ Full production deployment assets are in [`deploy/`](./deploy/):
 |------|--------------|
 | `deploy/kubernetes/` | Deployment, Service, Ingress (TLS), NetworkPolicy, HPA, PDB, cert-manager, ExternalSecrets — see [`deploy/kubernetes/README.md`](./deploy/kubernetes/README.md) |
 | `deploy/observability/` | Prometheus scrape config, Grafana dashboard, one-command Docker Compose observability stack |
-
----
-
-## Runbooks
 
 Operational runbooks are in [`docs/runbooks/`](./docs/runbooks/):
 
@@ -534,29 +500,10 @@ Operational runbooks are in [`docs/runbooks/`](./docs/runbooks/):
 - [Tenant onboarding](./docs/runbooks/onboarding.md) — new tenant checklist
 - [Secret management](./docs/runbooks/secret-management.md) — External Secrets + cert-manager
 
----
+</details>
 
-## Testing
-
-```bash
-.venv/bin/pytest -q
-```
-
-Coverage: graph CRUD, deduplication, conflict detection, tenant isolation,
-backup/import, stdio MCP, HTTP auth/health/metrics, payload limits.
-
-```bash
-# End-to-end backup/restore drill
-WAGGLE_HOST=http://localhost:8080 WAGGLE_API_KEY=<key> \
-  ./scripts/backup_restore_drill.sh
-
-# Load test (p50/p95/p99 latency report)
-WAGGLE_API_KEY=<key> ./scripts/load_test.sh --medium
-```
-
----
-
-## Architecture
+<details>
+<summary>Architecture & project layout</summary>
 
 ```
 waggle-mcp
@@ -569,26 +516,37 @@ waggle-mcp
 - Local/dev → SQLite (zero config, instant start)
 - Production → Neo4j (`WAGGLE_TRANSPORT=http` requires `WAGGLE_BACKEND=neo4j`)
 
----
-
-## Project layout
-
 ```
 waggle-mcp/
 ├── assets/                   ← banner + demo SVG
+├── benchmarks/fixtures/      ← checked-in eval datasets
 ├── deploy/
 │   ├── kubernetes/           ← full K8s manifests + guide
 │   └── observability/        ← Prometheus + Grafana stack
 ├── docs/runbooks/            ← operational runbooks
 ├── scripts/
+│   ├── benchmark_extraction.py
 │   ├── load_test.py / .sh
 │   └── backup_restore_drill.py / .sh
 ├── src/waggle/         ← server, graph, neo4j_graph, auth, config …
-├── tests/
+├── tests/artifacts/    ← saved benchmark runs
 ├── Dockerfile
 ├── pyproject.toml
 └── README.md
 ```
+
+</details>
+
+---
+
+## Testing
+
+```bash
+.venv/bin/pytest -q
+```
+
+Coverage: graph CRUD, deduplication, conflict detection, tenant isolation,
+backup/import, stdio MCP, HTTP auth/health/metrics, payload limits.
 
 ---
 
