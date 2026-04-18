@@ -13,6 +13,7 @@ _RELATION_RE = re.compile(
     r"^\s*-\s*(?P<deleted>~~)?\[\[(?P<relationship>[^:\]]+)::(?P<label>[^\]|]+)(?:\|(?P<alias>[^\]]+))?\]\](?P=deleted)?(?:\s*<!--\s*node_id:(?P<node_id>[a-f0-9-]+)\s*-->)?\s*$",
     re.IGNORECASE,
 )
+_SECTION_HEADING_RE = re.compile(r"^## (?P<title>Content|Evidence|Relations)\s*$", re.MULTILINE)
 
 
 @dataclass
@@ -125,22 +126,17 @@ def parse_node_document(path: Path) -> VaultDocument | None:
     if not frontmatter.get("node_id"):
         return None
     lines = body.splitlines()
-    label = ""
-    sections: dict[str, list[str]] = {}
-    current_section = ""
-    for line in lines:
-        if line.startswith("# "):
-            label = line[2:].strip()
-            continue
-        if line.startswith("## "):
-            current_section = line[3:].strip().lower()
-            sections.setdefault(current_section, [])
-            continue
-        if current_section:
-            sections.setdefault(current_section, []).append(line)
-    content = "\n".join(sections.get("content", [])).strip()
+    label = next((line[2:].strip() for line in lines if line.startswith("# ")), path.stem)
+    sections: dict[str, str] = {}
+    matches = list(_SECTION_HEADING_RE.finditer(body))
+    for index, match in enumerate(matches):
+        section = match.group("title").lower()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        sections[section] = body[start:end].strip()
+    content = sections.get("content", "").strip()
     relations: list[VaultRelationEdit] = []
-    for line in sections.get("relations", []):
+    for line in sections.get("relations", "").splitlines():
         match = _RELATION_RE.match(line.strip())
         if not match:
             continue
@@ -152,7 +148,7 @@ def parse_node_document(path: Path) -> VaultDocument | None:
                 deleted=bool(match.group("deleted")),
             )
         )
-    evidence_lines = [line.strip() for line in sections.get("evidence", []) if line.strip()]
+    evidence_lines = [line.strip() for line in sections.get("evidence", "").splitlines() if line.strip()]
     return VaultDocument(
         path=path,
         frontmatter=frontmatter,

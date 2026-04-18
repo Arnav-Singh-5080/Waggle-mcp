@@ -36,6 +36,25 @@
           "node_type": "decision",
           "timestamp": "2026-02-14T10:30:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "db_postgres_prod",
+          "target_fact_id": "db_sqlite_local",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "db_postgres_prod",
+          "target_fact_id": "db_sqlite_local",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -73,6 +92,25 @@
           "content": "JWT tokens now expire after 1 hour.",
           "node_type": "fact",
           "timestamp": "2026-03-03T16:45:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "auth_jwt_1h",
+          "target_fact_id": "auth_jwt_15m",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "auth_jwt_1h",
+          "target_fact_id": "auth_jwt_15m",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -112,6 +150,25 @@
           "node_type": "decision",
           "timestamp": "2026-03-05T14:10:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "cache_keydb_sessions",
+          "target_fact_id": "cache_redis_sessions",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "cache_keydb_sessions",
+          "target_fact_id": "cache_redis_sessions",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -149,6 +206,25 @@
           "content": "OpenSearch is the current product search engine for better ranking controls.",
           "node_type": "decision",
           "timestamp": "2026-03-12T18:30:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "search_opensearch",
+          "target_fact_id": "search_pg_trigram",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "search_opensearch",
+          "target_fact_id": "search_pg_trigram",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -188,6 +264,25 @@
           "node_type": "decision",
           "timestamp": "2026-02-21T13:50:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "frontend_nextjs",
+          "target_fact_id": "frontend_react_spa",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "frontend_nextjs",
+          "target_fact_id": "frontend_react_spa",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -225,6 +320,25 @@
           "content": "Analytics now use streaming ingestion for near-real-time dashboards.",
           "node_type": "decision",
           "timestamp": "2026-03-18T19:00:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "analytics_streaming",
+          "target_fact_id": "analytics_batch",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "analytics_streaming",
+          "target_fact_id": "analytics_batch",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -302,6 +416,25 @@
           "node_type": "decision",
           "timestamp": "2026-03-25T12:25:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "billing_paddle",
+          "target_fact_id": "billing_stripe",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "billing_paddle",
+          "target_fact_id": "billing_stripe",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -340,6 +473,25 @@
           "node_type": "decision",
           "timestamp": "2026-03-28T17:55:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "deploy_cloud_run",
+          "target_fact_id": "deploy_ecs",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "deploy_cloud_run",
+          "target_fact_id": "deploy_ecs",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -377,6 +529,25 @@
           "content": "Local BM25 now powers docs search to cut recurring cost.",
           "node_type": "decision",
           "timestamp": "2026-04-01T09:05:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "docs_bm25",
+          "target_fact_id": "docs_algolia",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "docs_bm25",
+          "target_fact_id": "docs_algolia",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -454,6 +625,25 @@
           "node_type": "decision",
           "timestamp": "2026-04-05T12:40:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "mobile_offline_queue",
+          "target_fact_id": "mobile_no_offline",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "mobile_offline_queue",
+          "target_fact_id": "mobile_no_offline",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -529,6 +719,25 @@
           "content": "Deployments now auto-rollback when 5xx error rate spikes after deploy.",
           "node_type": "decision",
           "timestamp": "2026-04-09T10:10:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "incident_autorollback_5xx",
+          "target_fact_id": "incident_no_autorollback",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "incident_autorollback_5xx",
+          "target_fact_id": "incident_no_autorollback",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -606,6 +815,25 @@
           "node_type": "decision",
           "timestamp": "2026-04-12T08:00:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "queue_temporal",
+          "target_fact_id": "queue_celery_redis",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "queue_temporal",
+          "target_fact_id": "queue_celery_redis",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -643,6 +871,25 @@
           "content": "Schema migrations now use Alembic autogenerate with manual review.",
           "node_type": "decision",
           "timestamp": "2026-04-11T11:45:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "schema_alembic",
+          "target_fact_id": "schema_manual",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "schema_alembic",
+          "target_fact_id": "schema_manual",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -682,6 +929,25 @@
           "node_type": "decision",
           "timestamp": "2026-04-11T09:25:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "onboarding_wizard",
+          "target_fact_id": "onboarding_long_form",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "onboarding_wizard",
+          "target_fact_id": "onboarding_long_form",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -719,6 +985,25 @@
           "content": "Feature flags now live in an internal control plane service.",
           "node_type": "decision",
           "timestamp": "2026-04-11T13:00:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "flags_control_plane",
+          "target_fact_id": "flags_env_vars",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "flags_control_plane",
+          "target_fact_id": "flags_env_vars",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
         }
       ]
     },
@@ -796,6 +1081,25 @@
           "node_type": "decision",
           "timestamp": "2026-04-12T14:15:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "obs_traces_slos",
+          "target_fact_id": "obs_logs_only",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "obs_traces_slos",
+          "target_fact_id": "obs_logs_only",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -872,6 +1176,25 @@
           "node_type": "decision",
           "timestamp": "2026-04-12T18:40:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "support_auto_sev1",
+          "target_fact_id": "support_manual_bh",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "support_auto_sev1",
+          "target_fact_id": "support_manual_bh",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        }
       ]
     },
     {
@@ -942,6 +1265,16 @@
           "node_type": "concept",
           "timestamp": "2026-01-10T14:00:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "ctx_postgres_decision",
+          "target_fact_id": "ctx_acid_reason",
+          "relationship": "depends_on",
+          "metadata": {
+            "origin": "comparative-support"
+          }
+        }
       ]
     },
     {
@@ -989,6 +1322,33 @@
           "node_type": "fact",
           "timestamp": "2026-03-15T15:30:00+00:00"
         }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "ctx_postgres_new",
+          "target_fact_id": "ctx_sqlite_old",
+          "relationship": "updates",
+          "metadata": {
+            "origin": "comparative-temporal"
+          }
+        },
+        {
+          "source_fact_id": "ctx_postgres_new",
+          "target_fact_id": "ctx_sqlite_old",
+          "relationship": "contradicts",
+          "metadata": {
+            "origin": "comparative-temporal",
+            "kind": "superseded-state"
+          }
+        },
+        {
+          "source_fact_id": "ctx_postgres_new",
+          "target_fact_id": "ctx_concurrency_reason",
+          "relationship": "derived_from",
+          "metadata": {
+            "origin": "comparative-support"
+          }
+        }
       ]
     },
     {
@@ -1028,6 +1388,24 @@
           "content": "System must support thousands of concurrent WebSocket connections with efficient async I/O",
           "node_type": "fact",
           "timestamp": "2026-01-20T11:00:00+00:00"
+        }
+      ],
+      "relations": [
+        {
+          "source_fact_id": "ctx_fastapi_decision",
+          "target_fact_id": "ctx_realtime_req",
+          "relationship": "depends_on",
+          "metadata": {
+            "origin": "comparative-support"
+          }
+        },
+        {
+          "source_fact_id": "ctx_realtime_req",
+          "target_fact_id": "ctx_concurrency_fact",
+          "relationship": "derived_from",
+          "metadata": {
+            "origin": "comparative-support"
+          }
         }
       ]
     }
@@ -1583,6 +1961,35 @@
         "queue_temporal"
       ],
       "task_family": "decision_delta"
+    },
+    {
+      "id": "q67",
+      "query": "what database decision was justified by ACID compliance requirements",
+      "gold_support_ids": [
+        "ctx_postgres_decision",
+        "ctx_acid_reason"
+      ],
+      "task_family": "cross_scenario_synthesis"
+    },
+    {
+      "id": "q68",
+      "query": "what did we use before PostgreSQL and what scaling issue forced the change",
+      "gold_support_ids": [
+        "ctx_sqlite_old",
+        "ctx_postgres_new",
+        "ctx_concurrency_reason"
+      ],
+      "task_family": "multi_session_change"
+    },
+    {
+      "id": "q69",
+      "query": "why did we pick FastAPI and what deeper requirement supported that choice",
+      "gold_support_ids": [
+        "ctx_fastapi_decision",
+        "ctx_realtime_req",
+        "ctx_concurrency_fact"
+      ],
+      "task_family": "cross_scenario_synthesis"
     }
   ],
   "failure_protocol": [

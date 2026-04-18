@@ -122,6 +122,8 @@ class EmbeddingModel:
         b_vec = np.asarray(b, dtype=np.float32)
         if a_vec.size == 0 or b_vec.size == 0:
             return 0.0
+        if a_vec.shape != b_vec.shape:
+            return 0.0
         a_norm = float(np.linalg.norm(a_vec))
         b_norm = float(np.linalg.norm(b_vec))
         if a_norm == 0.0 or b_norm == 0.0:

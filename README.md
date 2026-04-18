@@ -24,20 +24,16 @@
 
 ## Why waggle-mcp?
 
-`waggle-mcp` is a local-first memory layer for MCP-compatible AI clients, built on a persistent knowledge graph.
-
-MCP is the **Model Context Protocol**: the tool interface desktop AI clients like Claude Desktop, Cursor, and Codex use to talk to local servers.
-
-Waggle gives your AI a persistent knowledge graph it can read and write through any MCP-compatible client.
+`waggle-mcp` is a local-first memory layer for MCP-compatible AI clients, built on a persistent knowledge graph. It gives your AI a persistent knowledge graph it can read and write through any MCP-compatible client (Clause Desktop, Cursor, Codex, Antigravity, etc.).
 
 | Stuffed context | Structured retrieval |
 |-----------------|----------------------|
-| Context stuffed into a huge prompt every session | Compact subgraph retrieved at query time |
+| Huge prompts every session | Compact subgraph retrieved at query time |
 | Session-local memory | Persistent multi-session memory |
-| Flat notes and chunks | Typed nodes and edges: decisions, reasons, contradictions, updates |
+| Flat notes and chunks | Typed nodes and edges: decisions, reasons, contradictions |
 | "What changed?" requires replaying logs | Temporal queries and diffs are first-class |
 
-Waggle's core tradeoff is deliberate: it stores structured knowledge instead of replaying entire transcripts. On Waggle's checked-in 27-scenario multi-session corpus, that yields **up to ~4× fewer tokens on simple retrieval queries** and **~2.7× fewer tokens overall** than naive chunked retrieval. Graph-traversal queries spend more tokens because they include reasoning context such as updates, contradictions, and dependencies. The benchmark section below shows the actual numbers and limits.
+Waggle yields **up to ~4× fewer tokens** than naive chunked retrieval on factual queries. Graph-traversal queries spend more tokens to include necessary reasoning context such as updates, contradictions, and dependencies.
 
 ---
 
@@ -49,43 +45,7 @@ waggle-mcp init
 # Restart your MCP client. Done.
 ```
 
-`init` detects your MCP client, writes its config, and creates the local database directory. Default mode is local SQLite with on-device embeddings.
-
-### Antigravity (https://antigravity.google)
-
-Antigravity supports MCP servers, but the config format can vary by version/build. Add Waggle to Antigravity's MCP config, then fully restart Antigravity so it reloads MCP tools.
-
-**Option A: Antigravity `mcp_config.json` (UI: MCP Servers → Manage → View raw config)**
-
-Add a `waggle` entry under `mcpServers`:
-
-```json
-{
-  "mcpServers": {
-    "waggle": {
-      "command": "/absolute/path/to/python",
-      "args": ["-m", "waggle.server"]
-    }
-  }
-}
-```
-
-**Option B: Project-level `.vscode/mcp.json` (VS Code MCP format)**
-
-Some Antigravity setups use a project file with a top-level `servers` object:
-
-```json
-{
-  "servers": {
-    "waggle": {
-      "command": "/absolute/path/to/python",
-      "args": ["-m", "waggle.server"]
-    }
-  }
-}
-```
-
-Tip: set `command` to the exact Python where Waggle is installed (often your venv's `.../.venv/bin/python`, or whatever `which python3` returns in that environment).
+`init` detects your MCP client, writes its config, and creates the local database directory. Default mode is local SQLite with on-device embeddings. Antigravity and manual configuration details are in [docs/reference.md](./docs/reference.md).
 
 ---
 
@@ -117,178 +77,47 @@ Agent: [calls store_node() + store_edge(new_node → old_node, "contradicts")]
        → both positions are preserved, and the contradiction is explicit
 ```
 
-This is the main difference from chunk replay: the agent does not just recover a transcript snippet, it recovers the decision, the reason, and what changed.
+---
+
+## Key Features
+
+- **Automatic Extraction**: `observe_conversation` ingests facts into the graph without manual schema work.
+- **Portable Context**: `export_context_bundle` generates Markdown/JSON context packs for another AI.
+- **Vault Round-trip**: `export_markdown_vault` / `import_markdown_vault` for Obsidian-style node editing.
+- **Conflict Resolution**: `list_conflicts` / `resolve_conflict` to manage contradictions without losing history.
+- **Deterministic Integrity**: Uses a stable deterministic parser and SHA-256 embeddings for reliable, local-first operation.
 
 ---
 
-## Portable context handoff
+## Benchmarks & Verification
 
-Hit a rate limit? Switching models mid-project? Handing context to another AI?
-
-`export_context_bundle` generates a Markdown or JSON context pack that another AI can ingest directly.
-
-Example MCP tool call:
-
-```javascript
-export_context_bundle({
-  "mode": "query",
-  "query": "database architecture decisions",
-  "format": "both",
-  "retrieval_mode": "fusion"
-})
-```
-
-Supported export modes:
-- `prime` — compact brief from `prime_context`
-- `query` — answer a specific question with supporting graph context
-- `graph` — export the whole tenant graph, chunked for large memory sets
-
-Supported retrieval lanes for query-mode export:
-- `graph` — graph-native retrieval
-- `replay` — raw transcript/session replay
-- `fusion` — graph + replay merged with reciprocal-rank fusion
-
-Waggle also supports Obsidian-style round-trip editing:
-- `export_markdown_vault`
-- `import_markdown_vault`
-
-That writes one Markdown file per node with YAML frontmatter and wikilinks, then re-imports user edits non-destructively.
-
----
-
-## The core tool: `observe_conversation`
-
-Once your client prompt or tool policy nudges the model to call `observe_conversation`, the memory workflow becomes automatic.
-
-```text
-observe_conversation(user_message, assistant_response)
-```
-
-Each call:
-1. extracts atomic facts from the turn
-2. deduplicates against existing nodes
-3. links related concepts with typed edges
-4. flags contradictions and updates
-5. stores the raw turn for replay/fusion retrieval
-
-No separate schema authoring is required. The deterministic parser turns conversation turns into typed graph memory directly.
-
-### Closing extraction gaps
-
-The parser is intentionally deterministic, so extraction misses should be treated as fixture gaps, not mystery failures.
-
-The fastest workflow is:
-- reproduce the miss with a two-line `observe_conversation` smoke test
-- confirm whether the turn landed in replay only or also created a typed node
-- patch the extraction rule
-- add the exact turn to `benchmarks/fixtures/extraction_cases.json`
-- add a focused regression in `tests/test_graph.py`
-- rerun the benchmark harness and refresh `tests/artifacts/benchmark_current.json`
-
-That keeps README claims tied to checked-in fixtures instead of one-off manual smoke tests.
-
----
-
-## MCP tools
-
-Core workflow:
-
-| Tool | What it does |
-|------|--------------|
-| `observe_conversation` | Ingest a conversation turn into graph memory |
-| `query_graph` | Retrieve memory with `graph`, `replay`, or `fusion` mode |
-| `prime_context` | Build a compact brief for a fresh session |
-| `export_context_bundle` | Hand memory to another AI as Markdown or JSON |
-| `export_markdown_vault` | Export Obsidian-compatible Markdown files |
-| `import_markdown_vault` | Re-import edited Markdown vault files |
-| `timeline` | Build a chronological view of what changed |
-| `list_conflicts` / `resolve_conflict` | Inspect and resolve contradictions without deleting history |
-
-Additional graph/admin tools are documented in [docs/reference.md](./docs/reference.md).
-
----
-
-## Installation
-
-Local development:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-waggle-mcp init
-```
-
-Neo4j backend:
-
-```bash
-pip install -e ".[dev,neo4j]"
-WAGGLE_BACKEND=neo4j WAGGLE_TRANSPORT=http waggle-mcp
-```
-
-Docker, manual client config, environment variables, and admin commands are in [docs/reference.md](./docs/reference.md).
-
----
-
-## Benchmarks
-
-Benchmark summary:
+Waggle performance is verified against checked-in fixtures and automated regression tests.
 
 | Area | Corpus | Result |
 |------|--------|--------|
 | Extraction | 25-case deterministic fixture | `100%` |
 | Retrieval | 18-query retrieval fixture | `83% Hit@k` |
-| Comparative graph eval | 27-scenario / 66-query corpus | `88% Hit@k`, `79% exact support`, `56.3` mean tokens |
+| Comparative graph eval | 27-scenario / 69-query corpus | `88% Hit@k`, `77% exact support`, `58.5` mean tokens |
 | Query stress | 40 adversarial retrieval-only cases | `98% Hit@k`, `98% exact support` |
-| External baseline | LongMemEval `s` split, 500 questions | `graph_raw: 97.4% R@5 / 88.2% Exact@5`, `graph_hybrid: 96.4% R@5 / 85.6% Exact@5` |
+| Deduplication | 22 cases (semi-semantic) | `77% (17/22)`, zero false merges |
+| Unit Tests | Infrastructure & Logic | `90 passing tests` |
 
-What these numbers mean:
-- The comparative benchmark now measures Waggle as a graph system: fixture sessions are ingested through transcript observation, support/update/contradiction edges are added, and Waggle switches between flat retrieval and graph traversal by task family.
-- Waggle's mixed-policy comparative run is `88% Hit@k / 79% exact` at `56.3` mean tokens. The flat slice (`factual_recall`, `temporal_*`) measures `85% / 85%`; the graph slice (`change`, `delta`, `synthesis`, paraphrase) measures `93% / 70%`.
-- The token-efficiency claim remains material even under the richer graph benchmark: Waggle averages `56.3` tokens per retrieval vs `150.2` for naive chunked-vector RAG.
-- The retrieval engine itself is still strong in isolation (`98%` on the query-stress corpus). The remaining comparative gap is now better interpreted as graph-ingested ranking quality, not just flat semantic lookup.
-- Lower graph-mode exact support does not always mean bad retrieval. In several graph cases, Waggle returns the gold node plus extra related context, so the strict support metric can undercount useful reasoning bundles.
-- `cross_scenario_synthesis` remains the clearest known limitation: retrieving across loosely related scenarios still underperforms, and that is better framed as a current product boundary than as a simple bug.
-- Deduplication is intentionally conservative: best measured `17/22 = 77%`, with **zero false merges** across the threshold sweep.
+- **Token efficiency**: Waggle averages `58.5` tokens per retrieval vs `150.9` for naive chunked RAG.
+- **Retrieval split**: The flat slice (`factual_recall`, `temporal_*`) measures `85% / 85%`; the graph slice (`change`, `delta`, `synthesis`, paraphrase) measures `93% / 70%`.
+- **Deduplication**: Zero false-positive merges across the threshold sweep. Accuracy limited by conservative similarity bounds.
 
-Deep dives and saved artifacts:
-- Internal benchmark artifacts: [tests/artifacts/README.md](./tests/artifacts/README.md)
-- README claim verification snapshot: [tests/artifacts/verification/2026-04-18-readme-claims/README.md](./tests/artifacts/verification/2026-04-18-readme-claims/README.md)
-- LongMemEval artifacts: [benchmarks/longmemeval/README.md](./benchmarks/longmemeval/README.md)
-- LongMemEval methodology: [docs/longmemeval-methodology.md](./docs/longmemeval-methodology.md)
-- Evaluation roadmap: [docs/evaluation-plan.md](./docs/evaluation-plan.md)
-- Context handoff dogfood: [docs/context-handoff-dogfood.md](./docs/context-handoff-dogfood.md)
+Detailed benchmark artifacts and methodology are in [tests/artifacts/README.md](./tests/artifacts/README.md).
 
 ---
 
-## Docs and operations
+## Reference & Docs
 
-Detailed reference material lives outside the landing flow:
+Detailed reference material lives in external documentation:
 
-- Install variants, client config, environment variables, admin commands, and architecture:
-  [docs/reference.md](./docs/reference.md)
-- Kubernetes deployment:
-  [deploy/kubernetes/README.md](./deploy/kubernetes/README.md)
-- Runbooks:
-  [docs/runbooks/](./docs/runbooks/)
-- Benchmark artifacts and methodology:
-  [tests/artifacts/README.md](./tests/artifacts/README.md)
-  and [tests/artifacts/verification/2026-04-18-readme-claims/README.md](./tests/artifacts/verification/2026-04-18-readme-claims/README.md)
-  and [benchmarks/longmemeval/README.md](./benchmarks/longmemeval/README.md)
-- LongMemEval methodology note:
-  [docs/longmemeval-methodology.md](./docs/longmemeval-methodology.md)
-- Context handoff dogfood findings:
-  [docs/context-handoff-dogfood.md](./docs/context-handoff-dogfood.md)
-
----
-
-## Next Steps
-
-- Expand the extraction corpus beyond the current 25 cases so robustness claims are based on larger paraphrase-, temporal-, multi-fact-, and adversarial-negation-heavy fixtures.
-- Improve flat ranking inside the graph-ingested comparative corpus, especially `temporal_latest`, `temporal_original`, and plain factual recall where the mixed benchmark is currently weakest.
-- Add a handoff evaluation fixture that checks whether exported context bundles let a second model answer continuation questions correctly.
-- Tighten replay/fusion ranking for recall-heavy workloads and improve provenance summaries in exported bundles.
-- Polish Neo4j query paths and large-vault import reporting.
+- **[docs/reference.md](./docs/reference.md)**: Environment variables, admin commands, Docker setup, and full tool surface.
+- **[deploy/kubernetes/README.md](./deploy/kubernetes/README.md)**: Production deployment.
+- **[docs/runbooks/](./docs/runbooks/)**: Operations and troubleshooting.
+- **[tests/artifacts/README.md](./tests/artifacts/README.md)**: Benchmark artifacts and traceability.
 
 ---
 

@@ -797,36 +797,46 @@ class Neo4jMemoryGraph:
         replay_hits: list[ReplayHit],
     ) -> list[FusionHit]:
         combined: dict[str, FusionHit] = {}
-        graph_edges = [
-            {
+        graph_edge_map: dict[str, list[dict[str, Any]]] = {}
+        graph_nodes_by_session = {node.session_id: node for node in graph_result.nodes if node.session_id}
+        replay_by_session = {hit.session_id for hit in replay_hits if hit.session_id}
+        for edge in graph_result.edges:
+            payload = {
                 "id": edge.id,
                 "source_id": edge.source_id,
                 "target_id": edge.target_id,
                 "relationship": edge.relationship,
                 "weight": edge.weight,
             }
-            for edge in graph_result.edges
-        ]
+            graph_edge_map.setdefault(edge.source_id, []).append(payload)
+            graph_edge_map.setdefault(edge.target_id, []).append(payload)
         for index, node in enumerate(graph_result.nodes, start=1):
             key = f"graph:{node.id}"
+            source_lane = "both" if node.session_id and node.session_id in replay_by_session else "graph"
             combined[key] = FusionHit(
                 content=node.content,
                 score=1.0 / (60 + index),
-                source_lane="graph",
+                source_lane=source_lane,
                 graph_rank=index,
                 fused_rank=index,
                 node_id=node.id,
                 node_type=node.node_type.value,
-                edges=graph_edges,
+                edges=graph_edge_map.get(node.id, []),
                 session_id=node.session_id or None,
             )
         for index, hit in enumerate(replay_hits, start=1):
             key = f"replay:{hit.session_id}:{hit.turn_index}:{hit.role}"
-            matching_graph = next(
-                (node for node in graph_result.nodes if node.session_id and node.session_id == hit.session_id),
-                None,
-            )
+            matching_graph = graph_nodes_by_session.get(hit.session_id) if hit.session_id else None
             if matching_graph is not None:
+                existing = combined.get(f"graph:{matching_graph.id}")
+                if existing is not None:
+                    existing.score += 1.0 / (60 + index)
+                    existing.source_lane = "both"
+                    existing.replay_rank = index
+                    existing.session_id = hit.session_id
+                    existing.transcript_snippet = hit.transcript_snippet
+                    existing.turn_index = hit.turn_index
+                    continue
                 key = f"both:{matching_graph.id}:{hit.session_id}:{hit.turn_index}"
             existing = combined.get(key)
             contribution = 1.0 / (60 + index)
@@ -839,7 +849,7 @@ class Neo4jMemoryGraph:
                     fused_rank=index,
                     node_id=matching_graph.id if matching_graph is not None else None,
                     node_type=matching_graph.node_type.value if matching_graph is not None else None,
-                    edges=graph_edges if matching_graph is not None else None,
+                    edges=graph_edge_map.get(matching_graph.id, []) if matching_graph is not None else None,
                     session_id=hit.session_id,
                     transcript_snippet=hit.transcript_snippet,
                     turn_index=hit.turn_index,
@@ -966,21 +976,31 @@ class Neo4jMemoryGraph:
             ).consume()
             return node
 
-    def list_recent_nodes(self, limit: int = 10) -> list[Node]:
+    def list_recent_nodes(
+        self,
+        limit: int = 10,
+        *,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> list[Node]:
         with self._lock, self._session() as session:
-            return [
-                self._node_from_props(record["n"])
-                for record in session.run(
-                    """
-                    MATCH (n:MemoryNode {tenant_id: $tenant_id})
-                    RETURN n
-                    ORDER BY n.updated_at DESC, n.created_at DESC
-                    LIMIT $limit
-                    """,
-                    tenant_id=self.tenant_id,
-                    limit=max(1, limit),
-                )
-            ]
+            selected: list[Node] = []
+            for record in session.run(
+                """
+                MATCH (n:MemoryNode {tenant_id: $tenant_id})
+                RETURN n
+                ORDER BY n.updated_at DESC, n.created_at DESC
+                """,
+                tenant_id=self.tenant_id,
+            ):
+                node = self._node_from_props(record["n"])
+                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                    continue
+                selected.append(node)
+                if len(selected) >= max(1, limit):
+                    break
+            return selected
 
     def list_context_scopes(self) -> ContextScopeResult:
         with self._lock, self._session() as session:
@@ -1368,7 +1388,7 @@ class Neo4jMemoryGraph:
             destination = root / project_dir / node_type_dir / vault_filename(node)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(render_node_document(node, selected_edges, node_by_id), encoding="utf-8")
-            files_written.append(str(destination))
+            files_written.append(str(destination.relative_to(root)))
         return MarkdownVaultExportResult(
             root_path=str(root),
             tenant_id=self.tenant_id,
@@ -1399,6 +1419,7 @@ class Neo4jMemoryGraph:
                 nodes_by_id[node.id] = node
                 label_index.setdefault(node.label.strip().lower(), node)
 
+        imported_id_map: dict[str, str] = {}
         for document in documents:
             node_id = str(document.frontmatter.get("node_id", "")).strip()
             raw_type = str(document.frontmatter.get("node_type", "note") or "note")
@@ -1414,6 +1435,9 @@ class Neo4jMemoryGraph:
                     tags=[str(tag) for tag in document.frontmatter.get("tags", []) or []],
                 )
                 nodes_by_id[node_id] = updated
+                if node_id:
+                    imported_id_map[node_id] = updated.id
+                    nodes_by_id[node_id] = updated
                 label_index[updated.label.strip().lower()] = updated
                 result.nodes_updated += 1
             else:
@@ -1430,16 +1454,21 @@ class Neo4jMemoryGraph:
                     valid_to=self._parse_optional_datetime(document.frontmatter.get("valid_to")),
                 ).node
                 nodes_by_id[created.id] = created
+                if node_id:
+                    imported_id_map[node_id] = created.id
+                    nodes_by_id[node_id] = created
                 label_index[created.label.strip().lower()] = created
                 result.nodes_created += 1
 
         for document in documents:
-            source_node = nodes_by_id.get(str(document.frontmatter.get("node_id", "")).strip())
+            source_lookup_id = str(document.frontmatter.get("node_id", "")).strip()
+            source_node = nodes_by_id.get(imported_id_map.get(source_lookup_id, source_lookup_id))
             if source_node is None:
                 result.conflicts.append(f"Missing source node for {document.path.name}.")
                 continue
             for relation in document.relations:
-                target = nodes_by_id.get(relation.target_node_id) if relation.target_node_id else None
+                target_lookup_id = imported_id_map.get(relation.target_node_id, relation.target_node_id)
+                target = nodes_by_id.get(target_lookup_id) if target_lookup_id else None
                 if target is None and relation.target_label:
                     target = label_index.get(relation.target_label.strip().lower())
                 if target is None and relation.target_label:
@@ -1883,10 +1912,34 @@ class Neo4jMemoryGraph:
                 return PrimeContextResult(project=project, summary="No stored memory is available yet.")
 
             selected_ids: list[str] = []
-            selected_ids.extend(self._most_connected_node_ids(session, limit=5))
-            selected_ids.extend(node.id for node in self.list_recent_nodes(limit=5))
+            selected_ids.extend(
+                self._most_connected_node_ids(
+                    session,
+                    limit=5,
+                    agent_id=agent_id,
+                    project=project,
+                    session_id=session_id,
+                )
+            )
+            selected_ids.extend(
+                node.id
+                for node in self.list_recent_nodes(
+                    limit=5,
+                    agent_id=agent_id,
+                    project=project,
+                    session_id=session_id,
+                )
+            )
             if project.strip():
-                selected_ids.extend(self._find_project_node_ids(session, project=project, limit=8))
+                selected_ids.extend(
+                    self._find_project_node_ids(
+                        session,
+                        project=project,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        limit=8,
+                    )
+                )
             unique_ids = list(dict.fromkeys(selected_ids))
             nodes = [
                 node
@@ -2572,24 +2625,43 @@ class Neo4jMemoryGraph:
             ).consume()
         return int(summary.counters.relationships_deleted or 0) > 0
 
-    def _most_connected_node_ids(self, session: Any, *, limit: int) -> list[str]:
-        return [
-            record["id"]
-            for record in session.run(
-                """
-                MATCH (n:MemoryNode {tenant_id: $tenant_id})
-                OPTIONAL MATCH (n)-[r:MEMORY_EDGE {tenant_id: $tenant_id}]-()
-                WITH n, count(r) AS connection_count
-                RETURN n.id AS id, connection_count AS connection_count, n.updated_at AS updated_at
-                ORDER BY connection_count DESC, updated_at DESC
-                LIMIT $limit
-                """,
-                tenant_id=self.tenant_id,
-                limit=limit,
-            )
-        ]
+    def _most_connected_node_ids(
+        self,
+        session: Any,
+        *,
+        limit: int,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> list[str]:
+        selected: list[str] = []
+        for record in session.run(
+            """
+            MATCH (n:MemoryNode {tenant_id: $tenant_id})
+            OPTIONAL MATCH (n)-[r:MEMORY_EDGE {tenant_id: $tenant_id}]-()
+            WITH n, count(r) AS connection_count
+            RETURN n, connection_count
+            ORDER BY connection_count DESC, n.updated_at DESC
+            """,
+            tenant_id=self.tenant_id,
+        ):
+            node = self._node_from_props(record["n"])
+            if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                continue
+            selected.append(node.id)
+            if len(selected) >= limit:
+                break
+        return selected
 
-    def _find_project_node_ids(self, session: Any, *, project: str, limit: int) -> list[str]:
+    def _find_project_node_ids(
+        self,
+        session: Any,
+        *,
+        project: str,
+        agent_id: str = "",
+        session_id: str = "",
+        limit: int,
+    ) -> list[str]:
         project_lower = project.strip().lower()
         scored: list[tuple[str, float, float]] = []
         for record in session.run(
@@ -2597,6 +2669,8 @@ class Neo4jMemoryGraph:
             tenant_id=self.tenant_id,
         ):
             node = self._node_from_props(record["n"])
+            if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                continue
             tag_match = 1.0 if any(project_lower == tag.lower() for tag in node.tags) else 0.0
             lexical = lexical_overlap(project, node.label, node.content)
             score = max(tag_match, lexical)

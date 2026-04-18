@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import pickle
 from hashlib import sha256
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -277,42 +276,112 @@ def _cache_key(
     ).hexdigest()[:16]
 
 
-def _cache_file_path(
+def _cache_file_stem(
     dataset_path: str | Path,
     *,
     cache_key: str,
     cache_dir: str | Path | None,
 ) -> Path:
-    return _cache_dir_for_dataset(dataset_path, cache_dir) / f"longmemeval-{cache_key}.pkl"
+    return _cache_dir_for_dataset(dataset_path, cache_dir) / f"longmemeval-{cache_key}"
 
 
-def _load_prepared_cache(cache_path: Path) -> PreparedLongMemEvalCache | None:
-    if not cache_path.exists():
+def _cache_file_paths(
+    dataset_path: str | Path,
+    *,
+    cache_key: str,
+    cache_dir: str | Path | None,
+) -> tuple[Path, Path]:
+    stem = _cache_file_stem(dataset_path, cache_key=cache_key, cache_dir=cache_dir)
+    return stem.with_suffix(".json"), stem.with_suffix(".npz")
+
+
+def _serialize_prepared_entries(prepared_entries: list[PreparedLongMemEvalEntry]) -> tuple[list[dict[str, Any]], dict[str, np.ndarray]]:
+    arrays: dict[str, np.ndarray] = {}
+    payload: list[dict[str, Any]] = []
+    for index, entry in enumerate(prepared_entries):
+        embedding_key = f"entry_{index}_embedding_matrix"
+        arrays[embedding_key] = np.asarray(entry.embedding_matrix, dtype=np.float32)
+        payload.append(
+            {
+                "query_id": entry.query_id,
+                "question": entry.question,
+                "correct_session_ids": list(entry.correct_session_ids),
+                "embedding_key": embedding_key,
+                "sessions": [
+                    {
+                        "session_id": session.session_id,
+                        "label": session.label,
+                        "content": session.content,
+                        "updated_at": session.updated_at.isoformat(),
+                    }
+                    for session in entry.sessions
+                ],
+            }
+        )
+    return payload, arrays
+
+
+def _deserialize_prepared_entries(payload: list[dict[str, Any]], arrays: Any) -> list[PreparedLongMemEvalEntry]:
+    prepared_entries: list[PreparedLongMemEvalEntry] = []
+    for entry in payload:
+        sessions = [
+            PreparedLongMemEvalSession(
+                session_id=str(session["session_id"]),
+                label=str(session["label"]),
+                content=str(session["content"]),
+                updated_at=datetime.fromisoformat(str(session["updated_at"])),
+            )
+            for session in entry.get("sessions", [])
+        ]
+        prepared_entries.append(
+            PreparedLongMemEvalEntry(
+                query_id=str(entry["query_id"]),
+                question=str(entry["question"]),
+                correct_session_ids=[str(item) for item in entry.get("correct_session_ids", [])],
+                sessions=sessions,
+                embedding_matrix=np.asarray(arrays[str(entry["embedding_key"])], dtype=np.float32),
+            )
+        )
+    return prepared_entries
+
+
+def _load_prepared_cache(metadata_path: Path, arrays_path: Path) -> PreparedLongMemEvalCache | None:
+    if not metadata_path.exists() or not arrays_path.exists():
         return None
-    with cache_path.open("rb") as handle:
-        payload = pickle.load(handle)
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    with np.load(arrays_path, allow_pickle=False) as arrays:
+        prepared_entries = _deserialize_prepared_entries(payload.get("prepared_entries", []), arrays)
+        question_embeddings = np.asarray(arrays[str(payload["question_embeddings_key"])], dtype=np.float32)
     return PreparedLongMemEvalCache(
-        prepared_entries=payload["prepared_entries"],
-        question_embeddings=np.asarray(payload["question_embeddings"], dtype=np.float32),
+        prepared_entries=prepared_entries,
+        question_embeddings=question_embeddings,
     )
 
 
 def _save_prepared_cache(
-    cache_path: Path,
+    metadata_path: Path,
+    arrays_path: Path,
     *,
     prepared_entries: list[PreparedLongMemEvalEntry],
     question_embeddings: np.ndarray,
 ) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with cache_path.open("wb") as handle:
-        pickle.dump(
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    prepared_payload, arrays = _serialize_prepared_entries(prepared_entries)
+    question_embeddings_key = "question_embeddings"
+    arrays[question_embeddings_key] = np.asarray(question_embeddings, dtype=np.float32)
+    metadata_path.write_text(
+        json.dumps(
             {
-                "prepared_entries": prepared_entries,
-                "question_embeddings": np.asarray(question_embeddings, dtype=np.float32),
+                "schema_version": 1,
+                "format": "waggle-longmemeval-cache",
+                "prepared_entries": prepared_payload,
+                "question_embeddings_key": question_embeddings_key,
             },
-            handle,
-            protocol=pickle.HIGHEST_PROTOCOL,
-        )
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    np.savez_compressed(arrays_path, **arrays)
 
 
 def _vector_similarity_matrix(question_embedding: np.ndarray, entry: PreparedLongMemEvalEntry, embedding_model: Any) -> np.ndarray:
@@ -371,12 +440,12 @@ def evaluate_longmemeval(
         limit=limit,
         dataset_digest=dataset_digest,
     )
-    cache_path = _cache_file_path(
+    cache_metadata_path, cache_arrays_path = _cache_file_paths(
         dataset_path,
         cache_key=cache_key,
         cache_dir=cache_dir,
     )
-    cached = _load_prepared_cache(cache_path)
+    cached = _load_prepared_cache(cache_metadata_path, cache_arrays_path)
     if cached is not None:
         cache_status = "warm"
         prepared_entries = cached.prepared_entries
@@ -389,7 +458,8 @@ def evaluate_longmemeval(
             [prepared_entry.question for prepared_entry in prepared_entries],
         )
         _save_prepared_cache(
-            cache_path,
+            cache_metadata_path,
+            cache_arrays_path,
             prepared_entries=prepared_entries,
             question_embeddings=question_embeddings,
         )
@@ -427,7 +497,7 @@ def evaluate_longmemeval(
         mode=mode,
         case_count=case_count,
         cache_status=cache_status,
-        cache_path=str(cache_path),
+        cache_path=str(cache_metadata_path),
         prepared_entry_count=len(prepared_entries),
         prepared_session_count=prepared_session_count,
         cache_key=cache_key,
@@ -443,7 +513,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["graph_raw", "graph_hybrid"], default="graph_raw")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of entries to evaluate.")
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2")
-    parser.add_argument("--cache-dir", type=Path, default=None, help="Optional directory for prepared LongMemEval cache files.")
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for prepared LongMemEval cache files (JSON metadata plus .npz embeddings).",
+    )
     parser.add_argument("--output", type=Path, default=None)
     return parser
 

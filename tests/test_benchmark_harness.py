@@ -47,7 +47,13 @@ def test_fixture_loading_is_auditable() -> None:
     assert len(fixtures["retrieval_cases"]["queries"]) == 18
     assert len(fixtures["dedup_cases"]) == 22
     assert len(fixtures["comparative_eval"]["scenarios"]) >= 20
-    assert len(fixtures["comparative_eval"]["queries"]) == 66
+    assert len(fixtures["comparative_eval"]["queries"]) == 69
+    comparative_gold_ids = {
+        support_id
+        for query in fixtures["comparative_eval"]["queries"]
+        for support_id in query["gold_support_ids"]
+    }
+    assert {"ctx_postgres_decision", "ctx_acid_reason", "ctx_sqlite_old", "ctx_postgres_new", "ctx_concurrency_reason", "ctx_fastapi_decision", "ctx_realtime_req", "ctx_concurrency_fact"} <= comparative_gold_ids
     assert len(fixtures["query_stress_cases"]["queries"]) >= 40
     assert sum(1 for case in fixtures["query_stress_cases"]["queries"] if case["task_family"] == "adversarial_paraphrase") >= 20
     assert sum(1 for case in fixtures["query_stress_cases"]["queries"] if case["task_family"] == "temporal_latest") >= 20
@@ -75,11 +81,11 @@ def test_benchmark_report_includes_backend_labels_and_case_counts() -> None:
     assert dedup.case_count == 22
     assert "threshold" in dedup.metadata
     assert report.comparative["corpus"]["scenario_count"] >= 20
-    assert report.comparative["corpus"]["query_count"] == 66
+    assert report.comparative["corpus"]["query_count"] == 69
     assert report.fixtures["query_stress_cases"] >= 40
     assert set(report.stress_eval["systems"]) == {"graph_raw", "graph_hybrid"}
     assert set(report.comparative["systems"]) == {"waggle", "rag_naive", "rag_tuned"}
-    assert len(report.comparative["per_case"]) == 198
+    assert len(report.comparative["per_case"]) == 207
     assert set(report.comparative["systems"]["waggle"]["by_retrieval_mode"]) == {"flat", "graph"}
     assert set(report.comparative["systems"]["waggle"]["query_policy"]) == {"flat", "graph"}
 

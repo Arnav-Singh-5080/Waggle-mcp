@@ -322,13 +322,96 @@ def _relationship_lines(bundle: ContextBundle) -> list[str]:
     return lines
 
 
+def _estimate_bundle_tokens(
+    bundle: ContextBundle,
+    *,
+    include_edges: bool,
+    include_timestamps: bool,
+    include_source_prompt: bool,
+) -> int:
+    parts: list[str] = [
+        bundle.tenant_id,
+        bundle.project,
+        bundle.mode,
+        bundle.retrieval_mode,
+        bundle.audience,
+        bundle.query,
+        bundle.summary,
+        bundle.generated_at.isoformat(),
+    ]
+    for node in bundle.nodes:
+        parts.extend(
+            [
+                node.id,
+                node.agent_id,
+                node.project,
+                node.session_id,
+                node.label,
+                node.content,
+                node.node_type.value,
+                " ".join(node.tags),
+            ]
+        )
+        if include_timestamps:
+            parts.extend(
+                [
+                    node.created_at.isoformat(),
+                    node.updated_at.isoformat(),
+                    node.valid_from.isoformat() if node.valid_from is not None else "",
+                    node.valid_to.isoformat() if node.valid_to is not None else "",
+                ]
+            )
+        if include_source_prompt:
+            parts.append(node.source_prompt)
+        for evidence in rank_node_evidence(node, query=bundle.query, limit=2):
+            parts.extend(
+                [
+                    evidence.source_role,
+                    str(evidence.turn_index),
+                    evidence.source_text,
+                ]
+            )
+    if include_edges:
+        for edge in bundle.edges:
+            parts.extend(
+                [
+                    edge.id,
+                    edge.source_id,
+                    edge.target_id,
+                    edge.relationship,
+                    f"{edge.weight:.4f}",
+                    json.dumps(edge.metadata, sort_keys=True),
+                ]
+            )
+            if include_timestamps:
+                parts.append(edge.created_at.isoformat())
+    for hit in bundle.replay_hits:
+        parts.extend(
+            [
+                str(hit.score),
+                hit.session_id,
+                str(hit.turn_index),
+                hit.role,
+                hit.transcript_text,
+                hit.transcript_snippet,
+            ]
+        )
+        if include_timestamps:
+            parts.append(hit.observed_at.isoformat())
+    for item in bundle.timeline:
+        parts.extend([item.kind, item.label, item.summary])
+        if include_timestamps:
+            parts.append(item.timestamp.isoformat())
+    return _estimate_tokens("\n".join(part for part in parts if part))
+
+
 def render_context_bundle_markdown(
     bundle: ContextBundle,
     *,
     include_edges: bool,
     include_timestamps: bool,
     include_source_prompt: bool,
-) -> str:
+) -> tuple[str, int]:
     grouped_nodes = _group_nodes(bundle.nodes)
     lines = [
         "# Waggle Context Bundle",
@@ -425,8 +508,7 @@ def render_context_bundle_markdown(
         lines.append("")
 
     markdown = "\n".join(lines).strip() + "\n"
-    bundle.render_hints.token_estimate = _estimate_tokens(markdown)
-    return markdown
+    return markdown, _estimate_tokens(markdown)
 
 
 def render_context_bundle_json(
@@ -515,25 +597,26 @@ def export_context_bundle_files(
     )
 
     if markdown_path is not None:
+        markdown, token_estimate = render_context_bundle_markdown(
+            bundle,
+            include_edges=include_edges,
+            include_timestamps=include_timestamps,
+            include_source_prompt=include_source_prompt,
+        )
+        bundle.render_hints.token_estimate = token_estimate
         markdown_path.write_text(
-            render_context_bundle_markdown(
-                bundle,
-                include_edges=include_edges,
-                include_timestamps=include_timestamps,
-                include_source_prompt=include_source_prompt,
-            ),
+            markdown,
             encoding="utf-8",
         )
 
     if json_path is not None:
         if bundle.render_hints.token_estimate == 0:
-            preview = render_context_bundle_markdown(
+            bundle.render_hints.token_estimate = _estimate_bundle_tokens(
                 bundle,
                 include_edges=include_edges,
                 include_timestamps=include_timestamps,
                 include_source_prompt=include_source_prompt,
             )
-            bundle.render_hints.token_estimate = _estimate_tokens(preview)
         json_path.write_text(
             render_context_bundle_json(
                 bundle,

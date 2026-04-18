@@ -75,4 +75,4 @@ __all__ = [
 try:  # pragma: no cover
     __version__ = version("waggle-mcp")
 except PackageNotFoundError:  # pragma: no cover
-    __version__ = "0.1.3"
+    __version__ = "0.1.4"

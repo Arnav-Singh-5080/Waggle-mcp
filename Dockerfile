@@ -11,6 +11,8 @@ LABEL org.opencontainers.image.title="waggle-mcp" \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
     WAGGLE_TRANSPORT=stdio \
     WAGGLE_BACKEND=sqlite \
     WAGGLE_DB_PATH=memory.db \
@@ -30,11 +32,12 @@ COPY src ./src
 # 2) Then install the project + neo4j extras
 RUN pip install --upgrade pip && \
     pip install torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install ".[neo4j]"
+    pip install ".[neo4j]" && \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
 # Non-root user required by Glama's security policy
 RUN useradd --no-create-home --shell /bin/false waggle && \
-    mkdir -p /app/data && \
+    mkdir -p /app/data /app/.cache && \
     chown -R waggle:waggle /app
 
 USER waggle

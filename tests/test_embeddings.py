@@ -19,10 +19,17 @@ def test_cosine_similarity_handles_orthogonal_vectors() -> None:
     assert EmbeddingModel.cosine_similarity(a, b) == 0.0
 
 
+def test_cosine_similarity_returns_zero_for_shape_mismatch() -> None:
+    a = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    b = np.array([1.0, 0.0], dtype=np.float32)
+    assert EmbeddingModel.cosine_similarity(a, b) == 0.0
+
+
 def test_fake_model_is_deterministic_and_normalized() -> None:
     model = EmbeddingModel("fake-model")
+    other_model = EmbeddingModel("fake-model")
     a = model.embed("PostgreSQL over MySQL")
-    b = model.embed("PostgreSQL over MySQL")
+    b = other_model.embed("PostgreSQL over MySQL")
     c = model.embed("Dark mode UI")
 
     assert np.allclose(a, b)

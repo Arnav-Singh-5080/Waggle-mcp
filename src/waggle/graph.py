@@ -995,61 +995,67 @@ class MemoryGraph:
 
     def _build_fusion_hits(self, graph_result: SubgraphResult, replay_hits: list[ReplayHit]) -> list[FusionHit]:
         rrf_k = 60.0
-        replay_by_session = {hit.session_id for hit in replay_hits}
+        replay_by_session = {hit.session_id for hit in replay_hits if hit.session_id}
         graph_edge_map: dict[str, list[dict[str, Any]]] = {}
+        graph_nodes_by_session = {node.session_id: node for node in graph_result.nodes if node.session_id}
+        combined: dict[str, FusionHit] = {}
+
         for edge in graph_result.edges:
-            graph_edge_map.setdefault(edge.source_id, []).append(
-                {
-                    "id": edge.id,
-                    "source_id": edge.source_id,
-                    "target_id": edge.target_id,
-                    "relationship": edge.relationship,
-                    "weight": edge.weight,
-                }
-            )
-            graph_edge_map.setdefault(edge.target_id, []).append(
-                {
-                    "id": edge.id,
-                    "source_id": edge.source_id,
-                    "target_id": edge.target_id,
-                    "relationship": edge.relationship,
-                    "weight": edge.weight,
-                }
-            )
-        fused: list[FusionHit] = []
+            payload = {
+                "id": edge.id,
+                "source_id": edge.source_id,
+                "target_id": edge.target_id,
+                "relationship": edge.relationship,
+                "weight": edge.weight,
+            }
+            graph_edge_map.setdefault(edge.source_id, []).append(payload)
+            graph_edge_map.setdefault(edge.target_id, []).append(payload)
+
         for index, node in enumerate(graph_result.nodes, start=1):
             source_lane = "both" if node.session_id and node.session_id in replay_by_session else "graph"
-            fused.append(
-                FusionHit(
-                    content=node.content,
-                    score=1.0 / (rrf_k + index),
-                    source_lane=source_lane,
-                    graph_rank=index,
-                    replay_rank=None,
-                    fused_rank=0,
-                    node_id=node.id,
-                    node_type=node.node_type.value,
-                    edges=graph_edge_map.get(node.id, []),
-                    session_id=node.session_id or None,
-                )
+            combined[f"graph:{node.id}"] = FusionHit(
+                content=node.content,
+                score=1.0 / (rrf_k + index),
+                source_lane=source_lane,
+                graph_rank=index,
+                replay_rank=None,
+                fused_rank=0,
+                node_id=node.id,
+                node_type=node.node_type.value,
+                edges=graph_edge_map.get(node.id, []),
+                session_id=node.session_id or None,
             )
+
         for index, hit in enumerate(replay_hits, start=1):
-            source_lane = "both" if hit.session_id and any(node.session_id == hit.session_id for node in graph_result.nodes) else "replay"
-            fused.append(
-                FusionHit(
-                    content=hit.transcript_text,
-                    score=1.0 / (rrf_k + index),
-                    source_lane=source_lane,
-                    graph_rank=None,
-                    replay_rank=index,
-                    fused_rank=0,
-                    session_id=hit.session_id or None,
-                    transcript_snippet=hit.transcript_snippet,
-                    turn_index=hit.turn_index,
-                )
+            contribution = 1.0 / (rrf_k + index)
+            matching_graph = graph_nodes_by_session.get(hit.session_id) if hit.session_id else None
+            if matching_graph is not None:
+                existing = combined.get(f"graph:{matching_graph.id}")
+                if existing is not None:
+                    existing.score += contribution
+                    existing.source_lane = "both"
+                    existing.replay_rank = index
+                    existing.session_id = hit.session_id or None
+                    continue
+                key = f"both:{matching_graph.id}:{hit.session_id}:{hit.turn_index}"
+                source_lane = "both"
+            else:
+                key = f"replay:{hit.session_id}:{hit.turn_index}:{index}"
+                source_lane = "replay"
+            combined[key] = FusionHit(
+                content=hit.transcript_text,
+                score=contribution,
+                source_lane=source_lane,
+                graph_rank=None,
+                replay_rank=index,
+                fused_rank=0,
+                session_id=hit.session_id or None,
+                transcript_snippet=hit.transcript_snippet,
+                turn_index=hit.turn_index,
             )
+
         ordered = sorted(
-            fused,
+            combined.values(),
             key=lambda item: (-item.score, 0 if item.source_lane in {"both", "graph"} else 1, item.content.lower()),
         )
         for index, item in enumerate(ordered, start=1):
@@ -1189,7 +1195,14 @@ class MemoryGraph:
             connection.execute("DELETE FROM nodes WHERE id = ? AND tenant_id = ?", (node_id, self.tenant_id))
             return node
 
-    def list_recent_nodes(self, limit: int = 10) -> list[Node]:
+    def list_recent_nodes(
+        self,
+        limit: int = 10,
+        *,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> list[Node]:
         limit = max(1, limit)
         with self._lock, self._connect() as connection:
             rows = connection.execute(
@@ -1199,11 +1212,18 @@ class MemoryGraph:
                 FROM nodes
                 WHERE tenant_id = ?
                 ORDER BY updated_at DESC, created_at DESC
-                LIMIT ?
                 """,
-                (self.tenant_id, limit),
+                (self.tenant_id,),
             ).fetchall()
-            return [self._row_to_node(row) for row in rows]
+            selected: list[Node] = []
+            for row in rows:
+                node = self._row_to_node(row)
+                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                    continue
+                selected.append(node)
+                if len(selected) >= limit:
+                    break
+            return selected
 
     def list_context_scopes(self) -> ContextScopeResult:
         with self._lock, self._connect() as connection:
@@ -1580,7 +1600,7 @@ class MemoryGraph:
                 render_node_document(node, selected_edges, node_by_id),
                 encoding="utf-8",
             )
-            files_written.append(str(destination))
+            files_written.append(str(destination.relative_to(root)))
         return MarkdownVaultExportResult(
             root_path=str(root),
             tenant_id=self.tenant_id,
@@ -1624,9 +1644,14 @@ class MemoryGraph:
                 label_index.setdefault(node.label.strip().lower(), node)
                 nodes_by_id.setdefault(node.id, node)
 
+            imported_id_map: dict[str, str] = {}
             for document in documents:
+                original_node_id = str(document.frontmatter.get("node_id", "")).strip()
                 node, created = self._upsert_vault_document(connection, document)
                 nodes_by_id[node.id] = node
+                if original_node_id:
+                    imported_id_map[original_node_id] = node.id
+                    nodes_by_id[original_node_id] = node
                 label_index[node.label.strip().lower()] = node
                 if created:
                     result.nodes_created += 1
@@ -1635,12 +1660,13 @@ class MemoryGraph:
 
             for document in documents:
                 source_node_id = str(document.frontmatter.get("node_id", "")).strip()
-                source_node = nodes_by_id.get(source_node_id)
+                source_node = nodes_by_id.get(imported_id_map.get(source_node_id, source_node_id))
                 if source_node is None:
                     result.conflicts.append(f"Missing source node for document {document.path}.")
                     continue
                 for relation in document.relations:
-                    target_node = nodes_by_id.get(relation.target_node_id) if relation.target_node_id else None
+                    target_lookup_id = imported_id_map.get(relation.target_node_id, relation.target_node_id)
+                    target_node = nodes_by_id.get(target_lookup_id) if target_lookup_id else None
                     if target_node is None and relation.target_label:
                         target_node = label_index.get(relation.target_label.strip().lower())
                     if target_node is None and relation.target_label:
@@ -1950,10 +1976,34 @@ class MemoryGraph:
 
             # Collect seed anchors from multiple sources
             seed_ids: list[str] = []
-            seed_ids.extend(self._most_connected_node_ids(connection, limit=5))
-            seed_ids.extend(node.id for node in self.list_recent_nodes(limit=5))
+            seed_ids.extend(
+                self._most_connected_node_ids(
+                    connection,
+                    limit=5,
+                    agent_id=agent_id,
+                    project=project,
+                    session_id=session_id,
+                )
+            )
+            seed_ids.extend(
+                node.id
+                for node in self.list_recent_nodes(
+                    limit=5,
+                    agent_id=agent_id,
+                    project=project,
+                    session_id=session_id,
+                )
+            )
             if project.strip():
-                seed_ids.extend(self._find_project_node_ids(connection, project=project, limit=8))
+                seed_ids.extend(
+                    self._find_project_node_ids(
+                        connection,
+                        project=project,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        limit=8,
+                    )
+                )
             seed_ids = list(dict.fromkeys(seed_ids))  # Deduplicate
 
             if not seed_ids:
@@ -3168,32 +3218,52 @@ class MemoryGraph:
         ).fetchone()
         return self._row_to_edge(row) if row is not None else None
 
-    def _most_connected_node_ids(self, connection: sqlite3.Connection, *, limit: int) -> list[str]:
+    def _most_connected_node_ids(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        limit: int,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> list[str]:
         rows = connection.execute(
             """
-            SELECT n.id, COUNT(e.id) AS connection_count, n.updated_at
+            SELECT n.id, n.agent_id, n.project, n.session_id, n.label, n.content, n.node_type, n.tags, n.source_prompt,
+                   n.evidence_records, n.valid_from, n.valid_to, n.created_at, n.updated_at, n.access_count, n.tenant_id,
+                   COUNT(e.id) AS connection_count
             FROM nodes AS n
             LEFT JOIN edges AS e ON (n.id = e.source_id OR n.id = e.target_id) AND e.tenant_id = ?
             WHERE n.tenant_id = ?
             GROUP BY n.id
             ORDER BY connection_count DESC, n.updated_at DESC
-            LIMIT ?
             """,
-            (self.tenant_id, self.tenant_id, limit),
+            (self.tenant_id, self.tenant_id),
         ).fetchall()
-        return [str(row["id"]) for row in rows]
+        selected: list[str] = []
+        for row in rows:
+            node = self._row_to_node(row)
+            if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                continue
+            selected.append(str(row["id"]))
+            if len(selected) >= limit:
+                break
+        return selected
 
     def _find_project_node_ids(
         self,
         connection: sqlite3.Connection,
         *,
         project: str,
+        agent_id: str = "",
+        session_id: str = "",
         limit: int,
     ) -> list[str]:
         project_lower = project.strip().lower()
         rows = connection.execute(
             """
-            SELECT id, label, content, tags, project, updated_at
+            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
             FROM nodes
             WHERE tenant_id = ?
             ORDER BY updated_at DESC
@@ -3201,6 +3271,10 @@ class MemoryGraph:
         , (self.tenant_id,)).fetchall()
         scored: list[tuple[str, float, str]] = []
         for row in rows:
+            node = self._row_to_node(row)
+            if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                continue
+
             tags = json.loads(row["tags"] or "[]")
             tag_match = 1.0 if any(project_lower in {str(tag).lower(), f"project:{str(tag).lower()}"} for tag in tags) else 0.0
             explicit_match = 1.0 if str(row["project"] or "").strip().lower() == project_lower else 0.0

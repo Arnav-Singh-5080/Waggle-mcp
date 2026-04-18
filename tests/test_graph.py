@@ -443,8 +443,9 @@ def test_markdown_vault_export_and_import_round_trip(tmp_path: Path) -> None:
     exported = graph.export_markdown_vault(root_path=tmp_path / "vault")
     assert exported.files_written
 
-    decision_file = next(path for path in exported.files_written if decision.id in path)
-    updated_text = Path(decision_file).read_text(encoding="utf-8").replace(
+    decision_file_rel = next(path for path in exported.files_written if decision.id in path)
+    decision_file = Path(exported.root_path) / decision_file_rel
+    updated_text = decision_file.read_text(encoding="utf-8").replace(
         "We decided to use PostgreSQL for production.",
         "We decided to use PostgreSQL 16 for production.",
     )
@@ -455,7 +456,7 @@ def test_markdown_vault_export_and_import_round_trip(tmp_path: Path) -> None:
         f"- [[depends_on::Need ACID]] <!-- node_id:{reason.id} -->\n"
         "- [[relates_to::Operational Runbook]]",
     )
-    Path(decision_file).write_text(updated_text, encoding="utf-8")
+    decision_file.write_text(updated_text, encoding="utf-8")
 
     imported = graph.import_markdown_vault(root_path=tmp_path / "vault")
     updated = graph.get_node(decision.id)
@@ -483,12 +484,13 @@ def test_markdown_vault_import_explicit_relation_deletion(tmp_path: Path) -> Non
     graph.add_edge(source_id=decision.id, target_id=reason.id, relationship="depends_on")
 
     exported = graph.export_markdown_vault(root_path=tmp_path / "vault-delete")
-    decision_file = next(path for path in exported.files_written if decision.id in path)
-    updated_text = Path(decision_file).read_text(encoding="utf-8").replace(
+    decision_file_rel = next(path for path in exported.files_written if decision.id in path)
+    decision_file = Path(exported.root_path) / decision_file_rel
+    updated_text = decision_file.read_text(encoding="utf-8").replace(
         f"- [[depends_on::Need ACID]] <!-- node_id:{reason.id} -->",
         f"- ~~[[depends_on::Need ACID]]~~ <!-- node_id:{reason.id} -->",
     )
-    Path(decision_file).write_text(updated_text, encoding="utf-8")
+    decision_file.write_text(updated_text, encoding="utf-8")
 
     imported = graph.import_markdown_vault(root_path=tmp_path / "vault-delete")
     related = graph.get_related(node_id=decision.id, max_depth=1)

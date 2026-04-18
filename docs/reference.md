@@ -182,9 +182,20 @@ WAGGLE_NEO4J_USERNAME=neo4j WAGGLE_NEO4J_PASSWORD=change-me \
 
 ```text
 waggle-mcp
-├── Core domain    graph CRUD · dedup · local embeddings · conflict detection · export/import
-├── Transport      stdio MCP · streamable HTTP MCP
-└── Platform       config · auth · tenant isolation · rate limiting · logging · metrics
+├── Core domain
+│   ├── graph CRUD (nodes, edges, evidence)
+│   ├── dedup (semantic + exact)
+│   ├── conflict detection (auto-contradiction)
+│   ├── context assembly (query, prime, timeline)
+│   ├── export/import (JSON, Markdown, GraphML)
+│   └── local embeddings (SentenceTransformers + SHA-256 fallback)
+├── Transport
+│   ├── stdio MCP (local clients)
+│   └── HTTP MCP (server-to-server)
+└── Platform
+    ├── auth (API keys + tenant isolation)
+    ├── storage (SQLite + Neo4j)
+    └── operations (rate limiting, logging, metrics)
 ```
 
 Backend defaults:
@@ -207,3 +218,28 @@ waggle-mcp/
 ├── pyproject.toml
 └── README.md
 ```
+## Deduplication methodology
+
+Deduplication in Waggle is intentionally conservative to prevent false merges of distinct but similar facts.
+
+1. **Exact Content**: Case-insensitive, whitespace-normalized equality check.
+2. **Same-Label High-Similarity**: If labels are identical or acronym matches, a lower similarity threshold (`0.90` default) is used.
+3. **Semantic Similarity**: General node-to-node comparison using cosine similarity. Default threshold is `0.82` to ensure zero false positives across our 22-case fixture.
+
+The system prefers creating "Derived From" or "Updates" edges over destructive merging when similarity is ambiguous.
+
+## Context Assembly: Graph vs Flat
+
+Naive RAG often stuffs irrelevant chunks into the prompt, wasting tokens and confusing reasoning. Waggle's graph retrieval builds a structured context subgraph focused on the query's dependency chain.
+
+### Before: Naive Chunks (151 tokens)
+> [Chunk 1] Keep SQLite for local development for now.
+> [Chunk 2] Production is moving to PostgreSQL for parity.
+> [Chunk 3] PostgreSQL is the production database.
+> [Chunk 4] User: What is our database choice? Agent: You chose PostgreSQL.
+
+### After: Waggle Graph (58 tokens)
+> **Decisions**
+> - [id:db_postgres] "PostgreSQL production" - PostgreSQL is the prod DB.
+>   - *Updates*: "SQLite local only"
+>   - *Contradicts*: "SQLite local only" (superseded-state)

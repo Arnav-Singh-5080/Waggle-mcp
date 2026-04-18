@@ -148,3 +148,7 @@ def test_evaluate_longmemeval_reuses_disk_cache(tmp_path: Path) -> None:
     assert second_report.case_count == 1
     assert first_model.embedded_text_count == 3
     assert second_model.embedded_text_count == 0
+    assert Path(first_report.cache_path).suffix == ".json"
+    assert Path(first_report.cache_path).exists()
+    assert Path(first_report.cache_path).with_suffix(".npz").exists()
+    assert not Path(first_report.cache_path).with_suffix(".pkl").exists()

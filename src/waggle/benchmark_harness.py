@@ -550,6 +550,7 @@ def _build_comparative_graph(
 ) -> MemoryGraph:
     graph = _graph(embedding_model)
     for scenario in comparative_eval["scenarios"]:
+        fact_node_ids: dict[str, str] = {}
         for fact in scenario["facts"]:
             result = graph.add_node(
                 label=fact["label"],
@@ -558,8 +559,78 @@ def _build_comparative_graph(
                 tags=["benchmark", f"fact_id:{fact['id']}", f"scenario:{scenario['id']}"],
                 project="comparative-benchmark",
             )
+            fact_node_ids[fact["id"]] = result.node.id
             _set_node_timestamp(graph, result.node.id, fact["timestamp"])
+        _add_declared_comparative_relations(graph, scenario, fact_node_ids)
     return graph
+
+
+def _iter_declared_comparative_relations(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    relations: list[dict[str, Any]] = []
+    for relation in scenario.get("relations", []):
+        if not isinstance(relation, dict):
+            continue
+        source_fact_id = str(relation.get("source_fact_id") or relation.get("source") or "").strip()
+        target_fact_id = str(relation.get("target_fact_id") or relation.get("target") or "").strip()
+        relationship = str(relation.get("relationship") or "").strip().lower()
+        if not source_fact_id or not target_fact_id or not relationship:
+            continue
+        relations.append(
+            {
+                "source_fact_id": source_fact_id,
+                "target_fact_id": target_fact_id,
+                "relationship": relationship,
+                "metadata": dict(relation.get("metadata") or {}),
+            }
+        )
+    for supersede in scenario.get("supersedes", []):
+        if not isinstance(supersede, dict):
+            continue
+        source_fact_id = str(supersede.get("newer_fact_id") or supersede.get("source_fact_id") or "").strip()
+        target_fact_id = str(supersede.get("older_fact_id") or supersede.get("target_fact_id") or "").strip()
+        if not source_fact_id or not target_fact_id:
+            continue
+        relations.append(
+            {
+                "source_fact_id": source_fact_id,
+                "target_fact_id": target_fact_id,
+                "relationship": RelationType.UPDATES.value,
+                "metadata": {"origin": "comparative-supersedes", "scenario": scenario["id"]},
+            }
+        )
+        if supersede.get("contradicts", True):
+            relations.append(
+                {
+                    "source_fact_id": source_fact_id,
+                    "target_fact_id": target_fact_id,
+                    "relationship": RelationType.CONTRADICTS.value,
+                    "metadata": {
+                        "origin": "comparative-supersedes",
+                        "scenario": scenario["id"],
+                        "kind": "superseded-state",
+                    },
+                }
+            )
+    return relations
+
+
+def _add_declared_comparative_relations(
+    graph: MemoryGraph,
+    scenario: dict[str, Any],
+    fact_node_ids: dict[str, str],
+) -> None:
+    for relation in _iter_declared_comparative_relations(scenario):
+        source_id = fact_node_ids.get(relation["source_fact_id"])
+        target_id = fact_node_ids.get(relation["target_fact_id"])
+        if source_id is None or target_id is None or source_id == target_id:
+            continue
+        metadata = {"scenario": scenario["id"], **relation["metadata"]}
+        graph.add_edge(
+            source_id=source_id,
+            target_id=target_id,
+            relationship=relation["relationship"],
+            metadata=metadata,
+        )
 
 
 def _build_comparative_graph_with_sessions(
@@ -582,24 +653,7 @@ def _build_comparative_graph_with_sessions(
             )
             fact_node_ids[fact["id"]] = result.node.id
             _set_node_timestamp(graph, result.node.id, fact["timestamp"])
-
-        for older, newer in zip(ordered_facts, ordered_facts[1:], strict=False):
-            older_node_id = fact_node_ids[older["id"]]
-            newer_node_id = fact_node_ids[newer["id"]]
-            if older_node_id == newer_node_id:
-                continue
-            graph.add_edge(
-                source_id=newer_node_id,
-                target_id=older_node_id,
-                relationship=RelationType.UPDATES,
-                metadata={"origin": "comparative-temporal", "scenario": scenario["id"]},
-            )
-            graph.add_edge(
-                source_id=newer_node_id,
-                target_id=older_node_id,
-                relationship=RelationType.CONTRADICTS,
-                metadata={"origin": "comparative-temporal", "scenario": scenario["id"], "kind": "superseded-state"},
-            )
+        _add_declared_comparative_relations(graph, scenario, fact_node_ids)
 
         for session in scenario["sessions"]:
             user_message, assistant_response = _parse_comparative_transcript(session["transcript"])
