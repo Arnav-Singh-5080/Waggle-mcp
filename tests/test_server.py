@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import waggle
 from waggle.graph import MemoryGraph
 from waggle.models import NodeType, RelationType
 from waggle.config import AppConfig
@@ -367,7 +368,7 @@ def test_cli_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
 
     captured = capsys.readouterr()
     assert excinfo.value.code == 0
-    assert "waggle-mcp 0.1.3" in captured.out
+    assert f"waggle-mcp {waggle.__version__}" in captured.out
 
 
 def test_store_node_reports_deduplication(tmp_path: Path) -> None:
