@@ -254,7 +254,7 @@ The MCP server also exposes this behavior as:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WAGGLE_DB_PATH` | `memory.db` | path to the SQLite file |
+| `WAGGLE_DB_PATH` | `~/.waggle/memory.db` | path to the SQLite file |
 
 ### HTTP service
 

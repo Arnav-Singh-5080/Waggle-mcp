@@ -593,6 +593,17 @@ def test_default_graph_uses_sqlite_backend_by_default(tmp_path: Path, monkeypatc
     assert graph.db_path == tmp_path / "sqlite-memory.db"
 
 
+def test_default_graph_uses_home_scoped_sqlite_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("WAGGLE_BACKEND", raising=False)
+    monkeypatch.delenv("WAGGLE_DB_PATH", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    graph = _default_graph()
+
+    assert isinstance(graph, MemoryGraph)
+    assert graph.db_path == tmp_path / ".waggle" / "memory.db"
+
+
 def test_default_graph_can_build_neo4j_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 

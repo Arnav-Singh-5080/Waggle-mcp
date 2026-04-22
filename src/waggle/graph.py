@@ -284,6 +284,12 @@ def _scope_matches(node: Node, *, agent_id: str = "", project: str = "", session
     return True
 
 
+def _retrieval_session_scope(*, agent_id: str = "", project: str = "", session_id: str = "") -> str:
+    if session_id.strip() and (agent_id.strip() or project.strip()):
+        return ""
+    return session_id
+
+
 def _merge_scope_value(existing: str, incoming: str) -> str:
     return existing.strip() or incoming.strip()
 
@@ -844,14 +850,23 @@ class MemoryGraph:
             if total_nodes == 0:
                 return SubgraphResult(query=query, total_nodes_in_graph=0)
 
-            nodes_by_id: dict[str, Node] = {}
-            embeddings_by_id: dict[str, np.ndarray] = {}
-            for row in node_rows:
-                node = self._row_to_node(row)
-                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
-                    continue
-                nodes_by_id[node.id] = node
-                embeddings_by_id[node.id] = self.embedding_model.from_bytes(row["embedding"])
+            def collect_scoped_nodes(active_session_id: str) -> tuple[dict[str, Node], dict[str, np.ndarray]]:
+                scoped_nodes: dict[str, Node] = {}
+                scoped_embeddings: dict[str, np.ndarray] = {}
+                for row in node_rows:
+                    node = self._row_to_node(row)
+                    if not _scope_matches(node, agent_id=agent_id, project=project, session_id=active_session_id):
+                        continue
+                    scoped_nodes[node.id] = node
+                    scoped_embeddings[node.id] = self.embedding_model.from_bytes(row["embedding"])
+                return scoped_nodes, scoped_embeddings
+
+            active_session_id = _retrieval_session_scope(
+                agent_id=agent_id,
+                project=project,
+                session_id=session_id,
+            )
+            nodes_by_id, embeddings_by_id = collect_scoped_nodes(active_session_id)
 
             if not nodes_by_id:
                 return SubgraphResult(query=query, total_nodes_in_graph=total_nodes)
@@ -958,39 +973,49 @@ class MemoryGraph:
             return []
         query_embedding = self.embedding_model.embed(query)
         temporal_hints = infer_temporal_hints(query)
-        hits: list[tuple[float, ReplayHit]] = []
         timestamps = np.asarray([_parse_datetime(row["observed_at"]).timestamp() for row in rows], dtype=np.float64)
         max_timestamp = float(np.max(timestamps))
         min_timestamp = float(np.min(timestamps))
         span = max(max_timestamp - min_timestamp, 1.0)
-        for row, raw_timestamp in zip(rows, timestamps, strict=True):
-            record = self._row_to_transcript_record(row)
-            if not self._transcript_scope_matches(record, agent_id=agent_id, project=project, session_id=session_id):
-                continue
-            embedding = self.embedding_model.from_bytes(row["embedding"])
-            semantic_score = max(self.embedding_model.cosine_similarity(query_embedding, embedding), 0.0)
-            lexical_score = lexical_overlap(query, record.role, record.transcript_text)
-            temporal_score = 0.0
-            if temporal_hints.recency_mode == "latest":
-                temporal_score = float((raw_timestamp - min_timestamp) / span)
-            elif temporal_hints.recency_mode == "oldest":
-                temporal_score = float((max_timestamp - raw_timestamp) / span)
-            role_score = 1.0 if record.role == "user" else 0.8
-            score = (0.6 * semantic_score) + (0.2 * lexical_score) + (0.1 * temporal_score) + (0.1 * role_score)
-            hits.append(
-                (
-                    score,
-                    ReplayHit(
-                        score=score,
-                        session_id=record.session_id,
-                        turn_index=record.turn_index,
-                        role=record.role,
-                        transcript_text=record.transcript_text,
-                        transcript_snippet=record.transcript_text[:280],
-                        observed_at=record.observed_at,
-                    ),
+
+        def build_hits(active_session_id: str) -> list[tuple[float, ReplayHit]]:
+            hits: list[tuple[float, ReplayHit]] = []
+            for row, raw_timestamp in zip(rows, timestamps, strict=True):
+                record = self._row_to_transcript_record(row)
+                if not self._transcript_scope_matches(record, agent_id=agent_id, project=project, session_id=active_session_id):
+                    continue
+                embedding = self.embedding_model.from_bytes(row["embedding"])
+                semantic_score = max(self.embedding_model.cosine_similarity(query_embedding, embedding), 0.0)
+                lexical_score = lexical_overlap(query, record.role, record.transcript_text)
+                temporal_score = 0.0
+                if temporal_hints.recency_mode == "latest":
+                    temporal_score = float((raw_timestamp - min_timestamp) / span)
+                elif temporal_hints.recency_mode == "oldest":
+                    temporal_score = float((max_timestamp - raw_timestamp) / span)
+                role_score = 1.0 if record.role == "user" else 0.8
+                score = (0.6 * semantic_score) + (0.2 * lexical_score) + (0.1 * temporal_score) + (0.1 * role_score)
+                hits.append(
+                    (
+                        score,
+                        ReplayHit(
+                            score=score,
+                            session_id=record.session_id,
+                            turn_index=record.turn_index,
+                            role=record.role,
+                            transcript_text=record.transcript_text,
+                            transcript_snippet=record.transcript_text[:280],
+                            observed_at=record.observed_at,
+                        ),
+                    )
                 )
-            )
+            return hits
+
+        active_session_id = _retrieval_session_scope(
+            agent_id=agent_id,
+            project=project,
+            session_id=session_id,
+        )
+        hits = build_hits(active_session_id)
         return [item[1] for item in sorted(hits, key=lambda item: (-item[0], -item[1].observed_at.timestamp(), item[1].turn_index))[:max_hits]]
 
     def _build_fusion_hits(self, graph_result: SubgraphResult, replay_hits: list[ReplayHit]) -> list[FusionHit]:
@@ -1974,6 +1999,11 @@ class MemoryGraph:
             if total_nodes == 0:
                 return PrimeContextResult(project=project, summary="No stored memory is available yet.")
 
+            active_session_id = _retrieval_session_scope(
+                agent_id=agent_id,
+                project=project,
+                session_id=session_id,
+            )
             # Collect seed anchors from multiple sources
             seed_ids: list[str] = []
             seed_ids.extend(
@@ -1982,7 +2012,7 @@ class MemoryGraph:
                     limit=5,
                     agent_id=agent_id,
                     project=project,
-                    session_id=session_id,
+                    session_id=active_session_id,
                 )
             )
             seed_ids.extend(
@@ -1991,7 +2021,7 @@ class MemoryGraph:
                     limit=5,
                     agent_id=agent_id,
                     project=project,
-                    session_id=session_id,
+                    session_id=active_session_id,
                 )
             )
             if project.strip():
@@ -2000,7 +2030,7 @@ class MemoryGraph:
                         connection,
                         project=project,
                         agent_id=agent_id,
-                        session_id=session_id,
+                        session_id=active_session_id,
                         limit=8,
                     )
                 )
@@ -2026,7 +2056,7 @@ class MemoryGraph:
             nodes_by_id: dict[str, Node] = {}
             for row in node_rows:
                 node = self._row_to_node(row)
-                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=active_session_id):
                     continue
                 nodes_by_id[node.id] = node
 

@@ -798,10 +798,19 @@ def test_query_can_filter_by_explicit_scopes(tmp_path: Path) -> None:
 
     alpha = graph.query(query="production database", project="alpha", agent_id="codex")
     beta = graph.query(query="production database", session_id="sess-beta")
+    new_session = graph.query(
+        query="production database",
+        project="alpha",
+        agent_id="codex",
+        session_id="sess-new",
+    )
+    missing_session_only = graph.query(query="production database", session_id="sess-new")
     scopes = graph.list_context_scopes()
 
     assert [node.label for node in alpha.nodes] == ["DB choice alpha"]
     assert [node.label for node in beta.nodes] == ["DB choice beta"]
+    assert [node.label for node in new_session.nodes] == ["DB choice alpha"]
+    assert missing_session_only.nodes == []
     assert scopes.agent_ids == ["claude", "codex"]
     assert scopes.projects == ["alpha", "beta"]
     assert scopes.session_ids == ["sess-alpha", "sess-beta"]
@@ -962,10 +971,13 @@ def test_graph_diff_and_prime_context(tmp_path: Path) -> None:
 
     diff = graph.graph_diff(since="24h")
     prime = graph.prime_context(project="alpha")
+    new_session_prime = graph.prime_context(project="alpha", session_id="fresh-session")
 
     assert diff.added_nodes
     assert prime.nodes
+    assert new_session_prime.nodes
     assert any("alpha" in node.tags for node in prime.nodes)
+    assert any("alpha" in node.tags for node in new_session_prime.nodes)
 
 
 def test_get_topics_returns_clusters(tmp_path: Path) -> None:

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from waggle.errors import ValidationFailure
+
+DEFAULT_DB_PATH = "~/.waggle/memory.db"
 
 
 @dataclass(slots=True)
@@ -33,7 +36,7 @@ class AppConfig:
             backend=os.environ.get("WAGGLE_BACKEND", "sqlite").strip().lower(),
             transport=os.environ.get("WAGGLE_TRANSPORT", "stdio").strip().lower(),
             model_name=os.environ.get("WAGGLE_MODEL", "all-MiniLM-L6-v2"),
-            db_path=os.environ.get("WAGGLE_DB_PATH", "memory.db"),
+            db_path=os.environ.get("WAGGLE_DB_PATH", DEFAULT_DB_PATH),
             default_tenant_id=os.environ.get("WAGGLE_DEFAULT_TENANT_ID", "local-default").strip(),
             http_host=os.environ.get("WAGGLE_HTTP_HOST", "0.0.0.0"),
             http_port=int(os.environ.get("WAGGLE_HTTP_PORT", "8080")),
@@ -61,6 +64,8 @@ class AppConfig:
             raise ValidationFailure("HTTP transport requires WAGGLE_BACKEND=neo4j.")
         if not self.default_tenant_id:
             raise ValidationFailure("WAGGLE_DEFAULT_TENANT_ID cannot be empty.")
+        if self.backend == "sqlite":
+            self.db_path = str(Path(self.db_path).expanduser())
         if self.backend == "neo4j" and (not self.neo4j_uri or not self.neo4j_username or not self.neo4j_password):
             raise ValidationFailure(
                 "Neo4j backend requires WAGGLE_NEO4J_URI, WAGGLE_NEO4J_USERNAME, and WAGGLE_NEO4J_PASSWORD."
