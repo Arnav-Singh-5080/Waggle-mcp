@@ -34,6 +34,7 @@ class AppConfig:
     neo4j_username: str
     neo4j_password: str
     neo4j_database: str
+    recency_half_life_days: float = 30.0
     startup_mode: str = STARTUP_MODE_NORMAL  # fast | normal | strict
 
     @classmethod
@@ -52,6 +53,7 @@ class AppConfig:
             max_concurrent_requests=int(os.environ.get("WAGGLE_MAX_CONCURRENT_REQUESTS", "8")),
             max_payload_bytes=int(os.environ.get("WAGGLE_MAX_PAYLOAD_BYTES", str(1024 * 1024))),
             request_timeout_seconds=int(os.environ.get("WAGGLE_REQUEST_TIMEOUT_SECONDS", "30")),
+            recency_half_life_days=float(os.environ.get("WAGGLE_RECENCY_HALF_LIFE_DAYS", "30.0")),
             export_dir=os.environ.get("WAGGLE_EXPORT_DIR"),
             neo4j_uri=os.environ.get("WAGGLE_NEO4J_URI", "").strip(),
             neo4j_username=os.environ.get("WAGGLE_NEO4J_USERNAME", "").strip(),
@@ -82,6 +84,8 @@ class AppConfig:
                 f"Unsupported WAGGLE_STARTUP_MODE: {self.startup_mode!r}. "
                 f"Valid values: fast, normal, strict."
             )
+        if self.recency_half_life_days <= 0:
+            raise ValidationFailure("WAGGLE_RECENCY_HALF_LIFE_DAYS must be greater than 0.")
 
     @property
     def is_fast_mode(self) -> bool:

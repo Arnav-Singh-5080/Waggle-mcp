@@ -44,8 +44,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     # Hugging Face / sentence-transformers model cache
-    HF_HOME=/cache/huggingface \
-    SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers \
+    HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
     # Set OFFLINE only after the first run (cache is populated).
     # The entrypoint script can flip this automatically.
     TRANSFORMERS_OFFLINE=0 \
@@ -64,7 +64,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Copy the installed packages AND the pre-downloaded model cache from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /root/.cache /cache
+COPY --from=builder /root/.cache /app/.cache
 
 # Copy project source
 WORKDIR /app
@@ -74,14 +74,14 @@ RUN pip install --no-deps -e .
 
 # Non-root user (required by Glama security policy)
 RUN useradd --no-create-home --shell /bin/false waggle && \
-    mkdir -p /data /cache && \
-    chown -R waggle:waggle /app /data /cache
+    mkdir -p /data /app/.cache && \
+    chown -R waggle:waggle /app /data
 
 USER waggle
 
 # /data  → database (SQLite)
-# /cache → model files (populated at build; mountable for override)
-VOLUME ["/data", "/cache"]
+# /app/.cache → model files (populated at build; mountable for override)
+VOLUME ["/data", "/app/.cache"]
 
 # Only exposed when WAGGLE_TRANSPORT=http
 EXPOSE 8080

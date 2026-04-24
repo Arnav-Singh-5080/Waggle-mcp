@@ -199,6 +199,7 @@ def _build_backend(config: AppConfig) -> Any:
             config.db_path,
             embedding_model,
             tenant_id=config.default_tenant_id,
+            recency_half_life_days=config.recency_half_life_days,
             export_dir=config.export_dir,
         )
     from waggle.neo4j_graph import Neo4jMemoryGraph
@@ -1229,6 +1230,7 @@ class WaggleServer:
             "node_type": node.node_type.value,
             "tags": node.tags,
             "source_prompt": node.source_prompt,
+            "metadata": node.metadata,
             "evidence_records": [
                 {
                     "evidence_id": record.evidence_id,
@@ -1247,6 +1249,10 @@ class WaggleServer:
             "created_at": node.created_at.isoformat(),
             "updated_at": node.updated_at.isoformat(),
             "access_count": node.access_count,
+            "similarity_score": node.similarity_score,
+            "recency_score": node.recency_score,
+            "edge_score": node.edge_score,
+            "final_score": node.final_score,
         }
 
     def _edge_payload(self, edge: Any) -> dict[str, Any]:
@@ -1333,6 +1339,7 @@ class WaggleServer:
                     "summary": item.summary,
                     "node_id": item.node_id,
                     "edge_id": item.edge_id,
+                    "recency_score": item.recency_score,
                 }
                 for item in result.items
             ],
@@ -1538,7 +1545,11 @@ class MCPHttpApp:
         self.transport = StreamableHTTPServerTransport(mcp_session_id=None, is_json_response_enabled=False)
         # Kick off background embedding warmup for HTTP transport (non-blocking).
         em = self.app_server._root_graph.embedding_model
-        if not self.config.is_fast_mode and not em._warmup_started:
+        if (
+            not self.config.is_fast_mode
+            and hasattr(em, "start_background_warmup")
+            and not getattr(em, "_warmup_started", False)
+        ):
             em.start_background_warmup()
         async with self.transport.connect() as (read_stream, write_stream):
             async with anyio.create_task_group() as tg:
@@ -1703,16 +1714,21 @@ async def run_stdio(config: AppConfig) -> None:
     app = get_app(config)
     graph = app._root_graph
     em = graph.embedding_model
-    if not config.is_fast_mode and not em._warmup_started:
+    if (
+        not config.is_fast_mode
+        and hasattr(em, "start_background_warmup")
+        and not getattr(em, "_warmup_started", False)
+    ):
         # Kick off background warmup so the first semantic call is fast.
         em.start_background_warmup()
     if config.is_strict_mode:
         # Block until the model is ready before accepting any requests.
         LOGGER.info("stdio_strict_mode_waiting_for_embedding", extra={"model": em.model_name})
-        em._ready_event.wait(timeout=120.0)
+        if hasattr(em, "_ready_event"):
+            em._ready_event.wait(timeout=120.0)
         LOGGER.info(
             "stdio_strict_mode_embedding_status",
-            extra={"status": em.warmup_status, "error": em.warmup_error},
+            extra={"status": getattr(em, "warmup_status", "unknown"), "error": getattr(em, "warmup_error", "")},
         )
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await app.server.run(read_stream, write_stream, app.initialization_options())

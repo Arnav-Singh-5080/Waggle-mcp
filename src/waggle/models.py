@@ -53,12 +53,17 @@ class Node(BaseModel):
     node_type: NodeType
     tags: list[str] = Field(default_factory=list)
     source_prompt: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
     evidence_records: list["EvidenceRecord"] = Field(default_factory=list)
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     access_count: int = 0
+    similarity_score: float | None = None
+    recency_score: float | None = None
+    edge_score: float | None = None
+    final_score: float | None = None
 
     @field_validator("label", "content", mode="before")
     @classmethod
@@ -247,6 +252,7 @@ class ContextTimelineItem(BaseModel):
     summary: str = ""
     node_id: str | None = None
     edge_id: str | None = None
+    recency_score: float | None = None
 
 
 class TimelineResult(BaseModel):

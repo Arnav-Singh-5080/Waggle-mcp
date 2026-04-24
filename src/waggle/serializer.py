@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from waggle.models import (
     ConflictEntry,
     ConflictListResult,
@@ -14,6 +16,21 @@ from waggle.models import (
     TimelineResult,
     TopicResult,
 )
+
+
+def _format_updated_ago(timestamp: datetime) -> str:
+    now = datetime.now(timezone.utc)
+    delta = max((now - timestamp.astimezone(timezone.utc)).total_seconds(), 0.0)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        minutes = max(1, round(delta / 60.0))
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    if delta < 86400:
+        hours = max(1, round(delta / 3600.0))
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = max(1, round(delta / 86400.0))
+    return f"{days} day{'s' if days != 1 else ''} ago"
 
 
 def serialize_subgraph(result: SubgraphResult) -> str:
@@ -45,9 +62,18 @@ def serialize_subgraph(result: SubgraphResult) -> str:
 
     for node in result.nodes:
         tags_suffix = f" tags:{node.tags}" if node.tags else ""
+        score_suffix = ""
+        if node.final_score is not None:
+            score_suffix = (
+                f"\n  Score: {node.final_score:.2f} "
+                f"(similarity: {(node.similarity_score or 0.0):.2f}, "
+                f"recency: {(node.recency_score or 0.0):.2f}, "
+                f"edge: {(node.edge_score or 0.0):.2f})"
+                f"\n  Updated: {_format_updated_ago(node.updated_at)}"
+            )
         lines.append(
             f'• (id: {node.id[:8]}) [{node.node_type.value}] "{node.label}" — {node.content} '
-            f"(created: {node.created_at.strftime('%Y-%m-%d')}, accessed: {node.access_count} times){tags_suffix}"
+            f"(created: {node.created_at.strftime('%Y-%m-%d')}, accessed: {node.access_count} times){tags_suffix}{score_suffix}"
         )
 
     lines.append("")
@@ -189,8 +215,9 @@ def serialize_timeline(result: TimelineResult) -> str:
         for item in result.items:
             anchor = f" node={item.node_id[:8]}" if item.node_id else ""
             edge = f" edge={item.edge_id[:8]}" if item.edge_id else ""
+            recency = f" recency={item.recency_score:.3f}" if item.recency_score is not None else ""
             lines.append(
-                f"• {item.timestamp.isoformat()} [{item.kind}] {item.label} — {item.summary}{anchor}{edge}"
+                f"• {item.timestamp.isoformat()} [{item.kind}] {item.label} — {item.summary}{anchor}{edge}{recency}"
             )
     else:
         lines.append("No timeline items.")

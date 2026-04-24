@@ -4,9 +4,11 @@ import hashlib
 import heapq
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,7 +44,6 @@ from waggle.intelligence import (
     normalize_text,
     paraphrase_dedup_score,
     parse_since_value,
-    score_node,
     split_atomic_items,
     summarize_topic,
     temporal_score_adjustment,
@@ -277,6 +278,7 @@ CREATE TABLE IF NOT EXISTS nodes (
         node_type IN ('fact', 'entity', 'concept', 'preference', 'decision', 'question', 'note')
     ),
     tags TEXT DEFAULT '[]',
+    metadata TEXT DEFAULT '{}',
     embedding BLOB,
     source_prompt TEXT DEFAULT '',
     evidence_records TEXT DEFAULT '[]',
@@ -385,6 +387,40 @@ def _decode_metadata(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def recency_weight(
+    updated_at: float,
+    now: float | None = None,
+    half_life_days: float = 30.0,
+) -> float:
+    if now is None:
+        now = time.time()
+    age_days = (now - updated_at) / 86400.0
+    if age_days < 0:
+        age_days = 0.0
+    return math.exp(-0.693 * age_days / half_life_days)
+
+
+def score_node(
+    similarity: float,
+    updated_at: float,
+    edge_weight: float = 1.0,
+    *,
+    now: float | None = None,
+    half_life_days: float = 30.0,
+    similarity_weight: float = 0.6,
+    recency_weight_factor: float = 0.3,
+    edge_weight_factor: float = 0.1,
+    superseded: bool = False,
+    superseded_penalty: float = 0.2,
+) -> float:
+    r = recency_weight(updated_at, now, half_life_days)
+    e = max(0.0, min(1.0, edge_weight))
+    score = (similarity * similarity_weight) + (r * recency_weight_factor) + (e * edge_weight_factor)
+    if superseded:
+        score *= superseded_penalty
+    return score
+
+
 def _scope_matches(node: Node, *, agent_id: str = "", project: str = "", session_id: str = "") -> bool:
     normalized_agent = agent_id.strip().lower()
     normalized_project = project.strip().lower()
@@ -421,6 +457,7 @@ class MemoryGraph:
         tenant_id: str = "local-default",
         dedup_similarity_threshold: float = 0.97,
         dedup_same_label_threshold: float = 0.9,
+        recency_half_life_days: float = 30.0,
         export_dir: str | Path | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -428,6 +465,7 @@ class MemoryGraph:
         self.tenant_id = tenant_id.strip() or "local-default"
         self.dedup_similarity_threshold = dedup_similarity_threshold
         self.dedup_same_label_threshold = dedup_same_label_threshold
+        self.recency_half_life_days = recency_half_life_days
         self.export_dir = Path(export_dir).expanduser() if export_dir is not None else self.db_path.parent / "exports"
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -460,6 +498,7 @@ class MemoryGraph:
         clone.tenant_id = tenant_id.strip() or "local-default"
         clone.dedup_similarity_threshold = self.dedup_similarity_threshold
         clone.dedup_same_label_threshold = self.dedup_same_label_threshold
+        clone.recency_half_life_days = self.recency_half_life_days
         clone.export_dir = self.export_dir
         clone._lock = self._lock
         clone.ensure_tenant(clone.tenant_id)
@@ -586,6 +625,8 @@ class MemoryGraph:
             connection.execute("UPDATE nodes SET tenant_id = ? WHERE tenant_id = ''", (self.tenant_id,))
         if "evidence_records" not in node_columns:
             connection.execute("ALTER TABLE nodes ADD COLUMN evidence_records TEXT DEFAULT '[]'")
+        if "metadata" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN metadata TEXT DEFAULT '{}'")
         if "valid_from" not in node_columns:
             connection.execute("ALTER TABLE nodes ADD COLUMN valid_from TEXT DEFAULT NULL")
         if "valid_to" not in node_columns:
@@ -650,6 +691,7 @@ class MemoryGraph:
             node_type=node_type,
             tags=tags or [],
             source_prompt=source_prompt,
+            metadata={},
             evidence_records=evidence_records or [],
             valid_from=valid_from,
             valid_to=valid_to,
@@ -675,11 +717,11 @@ class MemoryGraph:
             connection.execute(
                 """
                 INSERT INTO nodes (
-                    id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, embedding,
+                    id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, metadata, embedding,
                     source_prompt, evidence_records, valid_from, valid_to,
                     created_at, updated_at, access_count
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     node.id,
@@ -691,6 +733,7 @@ class MemoryGraph:
                     node.content,
                     node.node_type.value,
                     json.dumps(node.tags),
+                    _encode_metadata(node.metadata),
                     self.embedding_model.to_bytes(embedding),
                     node.source_prompt,
                     _encode_evidence_records(node.evidence_records),
@@ -725,6 +768,8 @@ class MemoryGraph:
         with self._lock, self._connect() as connection:
             self._require_node(connection, edge.source_id)
             self._require_node(connection, edge.target_id)
+            source_node = self.get_node(edge.source_id)
+            target_node = self.get_node(edge.target_id)
             existing_edge = self._find_existing_edge(
                 connection,
                 source_id=edge.source_id,
@@ -751,6 +796,8 @@ class MemoryGraph:
                     edge.created_at.isoformat(),
                 ),
             )
+            if edge.relationship in {RelationType.UPDATES.value, RelationType.CONTRADICTS.value}:
+                self._mark_node_superseded(connection, old_node=target_node, new_node=source_node, relationship=edge.relationship)
         return edge
 
     def get_node(self, node_id: str) -> Node:
@@ -871,6 +918,12 @@ class MemoryGraph:
                 """,
                 (json.dumps(metadata, sort_keys=True), self.tenant_id, edge_id),
             )
+            self._mark_node_superseded(
+                connection,
+                old_node=self.get_node(edge.target_id),
+                new_node=self.get_node(edge.source_id),
+                relationship=edge.relationship,
+            )
             updated_edge = Edge(
                 id=edge.id,
                 tenant_id=edge.tenant_id,
@@ -976,7 +1029,7 @@ class MemoryGraph:
             temporal_hints = infer_temporal_hints(query)
             node_rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                        evidence_records, valid_from, valid_to, created_at, updated_at, access_count, embedding, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND embedding IS NOT NULL
@@ -1086,6 +1139,7 @@ class MemoryGraph:
             max_access = max((node.access_count for node in candidate_nodes), default=0)
             degree_by_id = dict(graph.degree(expanded_depths.keys()))
             max_degree = max(degree_by_id.values(), default=0)
+            candidate_edges = self._fetch_edges_for_nodes(connection, [node.id for node in candidate_nodes])
             scored_nodes = self._sort_scored_nodes(
                 candidate_nodes,
                 max_nodes=max_nodes,
@@ -1098,6 +1152,7 @@ class MemoryGraph:
                 max_degree=max_degree,
                 max_depth=max_depth,
                 expanded_depths=expanded_depths,
+                edges=candidate_edges,
                 expansion_metadata=expansion_metadata,
             )
             scored_nodes = self._diversify_multi_intent_nodes(
@@ -1276,7 +1331,7 @@ class MemoryGraph:
             self._require_node(connection, node_id)
             node_rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                        created_at, updated_at, access_count, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
@@ -1295,6 +1350,20 @@ class MemoryGraph:
                 ordered_nodes.append(nodes_by_id[related_id])
 
             edges = self._fetch_edges_for_nodes(connection, [node.id for node in ordered_nodes])
+            now = time.time()
+            for node in ordered_nodes:
+                distance = 0 if node.id == node_id else nx.shortest_path_length(graph, source=node_id, target=node.id)
+                edge_weight = self._strongest_edge_weight(node.id, edges)
+                similarity = max(0.0, 1.0 - (0.25 * distance))
+                self._apply_node_score(node, similarity=similarity, edge_weight=edge_weight, now=now)
+            ordered_nodes.sort(
+                key=lambda node: (
+                    -(node.final_score if node.final_score is not None else 0.0),
+                    0 if node.id == node_id else 1,
+                    -node.updated_at.timestamp(),
+                    node.label.lower(),
+                )
+            )
             self._increment_access_counts(connection, [node.id for node in ordered_nodes])
             for node in ordered_nodes:
                 node.access_count += 1
@@ -1358,6 +1427,7 @@ class MemoryGraph:
                 node_type=node.node_type,
                 tags=updated_tags,
                 source_prompt=node.source_prompt,
+                metadata=node.metadata,
                 evidence_records=evidence_records if evidence_records is not None else node.evidence_records,
                 valid_from=valid_from if valid_from is not None else node.valid_from,
                 valid_to=valid_to if valid_to is not None else node.valid_to,
@@ -1369,7 +1439,7 @@ class MemoryGraph:
             connection.execute(
                 """
                 UPDATE nodes
-                SET label = ?, content = ?, tags = ?, embedding = ?, updated_at = ?,
+                SET label = ?, content = ?, tags = ?, metadata = ?, embedding = ?, updated_at = ?,
                     agent_id = ?, project = ?, session_id = ?,
                     evidence_records = ?, valid_from = ?, valid_to = ?
                 WHERE id = ? AND tenant_id = ?
@@ -1378,6 +1448,7 @@ class MemoryGraph:
                     updated_node.label,
                     updated_node.content,
                     json.dumps(updated_node.tags),
+                    _encode_metadata(updated_node.metadata),
                     embedding_bytes,
                     updated_node.updated_at.isoformat(),
                     updated_node.agent_id,
@@ -1413,7 +1484,7 @@ class MemoryGraph:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                        created_at, updated_at, access_count, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
@@ -1527,7 +1598,7 @@ class MemoryGraph:
         with self._lock, self._connect() as connection:
             node_rows = connection.execute(
                 """
-                SELECT id, label, content, node_type, tags, source_prompt,
+                SELECT id, label, content, node_type, tags, source_prompt, metadata,
                        created_at, updated_at, access_count
                 FROM nodes
                 WHERE tenant_id = ?
@@ -1696,7 +1767,7 @@ class MemoryGraph:
             with self._lock, self._connect() as connection:
                 node_rows = connection.execute(
                     """
-                    SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+                    SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                            evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
                     FROM nodes
                     WHERE tenant_id = ?
@@ -1766,7 +1837,7 @@ class MemoryGraph:
         with self._lock, self._connect() as connection:
             node_rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                        evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
@@ -1838,7 +1909,7 @@ class MemoryGraph:
             label_index: dict[str, Node] = {}
             all_rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                        evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
@@ -2439,7 +2510,7 @@ class MemoryGraph:
                 self._row_to_node(row)
                 for row in connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                        created_at, updated_at, access_count, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND created_at >= ?
@@ -2452,7 +2523,7 @@ class MemoryGraph:
                 self._row_to_node(row)
                 for row in connection.execute(
                 """
-                    SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+                    SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                            created_at, updated_at, access_count, tenant_id
                     FROM nodes
                     WHERE tenant_id = ?
@@ -2544,7 +2615,7 @@ class MemoryGraph:
             # Load all embeddable nodes and build graph
             node_rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                        created_at, updated_at, access_count, embedding, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND embedding IS NOT NULL
@@ -2594,6 +2665,7 @@ class MemoryGraph:
             degree_by_id = dict(graph.degree(expanded_depths.keys()))
             max_access = max((node.access_count for node in candidate_nodes), default=0)
             max_degree = max(degree_by_id.values(), default=0)
+            candidate_edges = self._fetch_edges_for_nodes(connection, [node.id for node in candidate_nodes])
 
             temporal_hints = _NeutralTemporalHints()
             scored_nodes = self._sort_scored_nodes(
@@ -2608,6 +2680,7 @@ class MemoryGraph:
                 max_degree=max_degree,
                 max_depth=max_depth,
                 expanded_depths=expanded_depths,
+                edges=candidate_edges,
                 expansion_metadata=expansion_metadata,
             )
 
@@ -2641,7 +2714,7 @@ class MemoryGraph:
         with self._lock, self._connect() as connection:
             node_rows = connection.execute(
                 """
-                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                        evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
@@ -2741,7 +2814,7 @@ class MemoryGraph:
     ) -> tuple[Node, str, float | None] | None:
         rows = connection.execute(
             """
-            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records,
+            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records,
                    valid_from, valid_to, created_at, updated_at, access_count, embedding, tenant_id
             FROM nodes
             WHERE tenant_id = ? AND embedding IS NOT NULL
@@ -2884,6 +2957,10 @@ class MemoryGraph:
     ) -> Node:
         merged_tags = list(dict.fromkeys([*existing_node.tags, *incoming_node.tags]))
         updated_source_prompt = existing_node.source_prompt or incoming_node.source_prompt
+        merged_metadata = dict(existing_node.metadata)
+        for key, value in incoming_node.metadata.items():
+            if key not in merged_metadata:
+                merged_metadata[key] = value
         merged_evidence = merge_evidence_records(existing_node.evidence_records, incoming_node.evidence_records)
         merged_valid_from, merged_valid_to = merge_validity_windows(
             existing_node.valid_from,
@@ -2895,7 +2972,7 @@ class MemoryGraph:
         connection.execute(
             """
             UPDATE nodes
-            SET agent_id = ?, project = ?, session_id = ?, tags = ?, source_prompt = ?, evidence_records = ?, valid_from = ?, valid_to = ?, updated_at = ?
+            SET agent_id = ?, project = ?, session_id = ?, tags = ?, metadata = ?, source_prompt = ?, evidence_records = ?, valid_from = ?, valid_to = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
             """,
             (
@@ -2903,6 +2980,7 @@ class MemoryGraph:
                 _merge_scope_value(existing_node.project, incoming_node.project),
                 _merge_scope_value(existing_node.session_id, incoming_node.session_id),
                 json.dumps(merged_tags),
+                _encode_metadata(merged_metadata),
                 updated_source_prompt,
                 _encode_evidence_records(merged_evidence),
                 merged_valid_from.isoformat() if merged_valid_from is not None else None,
@@ -2923,6 +3001,7 @@ class MemoryGraph:
             node_type=existing_node.node_type,
             tags=merged_tags,
             source_prompt=updated_source_prompt,
+            metadata=merged_metadata,
             evidence_records=merged_evidence,
             valid_from=merged_valid_from,
             valid_to=merged_valid_to,
@@ -2941,7 +3020,7 @@ class MemoryGraph:
 
         rows = connection.execute(
             """
-            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                    evidence_records, valid_from, valid_to, created_at, updated_at, access_count, embedding, tenant_id
             FROM nodes
             WHERE tenant_id = ? AND id != ?
@@ -2993,6 +3072,7 @@ class MemoryGraph:
                         edge.created_at.isoformat(),
                     ),
                 )
+                self._mark_node_superseded(connection, old_node=existing_node, new_node=node, relationship=edge.relationship)
             conflicts.append(
                 ConflictRecord(
                     other_node_id=existing_node.id,
@@ -3002,10 +3082,32 @@ class MemoryGraph:
             )
         return conflicts
 
+    def _mark_node_superseded(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        old_node: Node,
+        new_node: Node,
+        relationship: str,
+    ) -> None:
+        metadata = dict(old_node.metadata)
+        metadata["superseded_by"] = new_node.id
+        metadata["superseded_at"] = utc_now().isoformat()
+        metadata["superseded_relationship"] = relationship
+        connection.execute(
+            "UPDATE nodes SET metadata = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+            (
+                _encode_metadata(metadata),
+                old_node.updated_at.isoformat(),
+                old_node.id,
+                self.tenant_id,
+            ),
+        )
+
     def _fetch_node_row(self, connection: sqlite3.Connection, node_id: str) -> sqlite3.Row | None:
         return connection.execute(
             """
-            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                    created_at, updated_at, access_count, embedding, tenant_id
             FROM nodes
             WHERE id = ? AND tenant_id = ?
@@ -3023,7 +3125,7 @@ class MemoryGraph:
         placeholders = ", ".join("?" for _ in node_ids)
         rows = connection.execute(
             f"""
-            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, evidence_records, valid_from, valid_to,
+            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
                    created_at, updated_at, access_count, tenant_id
             FROM nodes
             WHERE tenant_id = ? AND id IN ({placeholders})
@@ -3042,7 +3144,13 @@ class MemoryGraph:
         limit: int,
     ) -> list[ContextTimelineItem]:
         items: list[ContextTimelineItem] = []
+        now = time.time()
         for node in nodes:
+            node_recency = recency_weight(
+                node.updated_at.timestamp(),
+                now=now,
+                half_life_days=self.recency_half_life_days,
+            )
             items.append(
                 ContextTimelineItem(
                     kind="node_created",
@@ -3050,6 +3158,7 @@ class MemoryGraph:
                     label=node.label,
                     summary=node.content,
                     node_id=node.id,
+                    recency_score=node_recency,
                 )
             )
             if node.updated_at != node.created_at:
@@ -3060,6 +3169,7 @@ class MemoryGraph:
                         label=node.label,
                         summary=node.content,
                         node_id=node.id,
+                        recency_score=node_recency,
                     )
                 )
             if include_evidence:
@@ -3071,6 +3181,7 @@ class MemoryGraph:
                             label=node.label,
                             summary=f"{record.source_role or 'unknown'} turn {record.turn_index}: {record.source_text or node.content}",
                             node_id=node.id,
+                            recency_score=node_recency,
                         )
                     )
         node_by_id = {node.id: node for node in nodes}
@@ -3084,6 +3195,11 @@ class MemoryGraph:
                     label=f"{source_label} -> {target_label}",
                     summary=edge.relationship,
                     edge_id=edge.id,
+                    recency_score=recency_weight(
+                        edge.created_at.timestamp(),
+                        now=now,
+                        half_life_days=self.recency_half_life_days,
+                    ),
                 )
             )
         return sorted(
@@ -3146,6 +3262,7 @@ class MemoryGraph:
             node_type=NodeType(row["node_type"]),
             tags=json.loads(row["tags"] or "[]"),
             source_prompt=row["source_prompt"] or "",
+            metadata=_decode_metadata(row["metadata"]) if "metadata" in row_keys else {},
             evidence_records=_decode_evidence_records(row["evidence_records"]) if "evidence_records" in row_keys else [],
             valid_from=_parse_datetime(row["valid_from"]) if "valid_from" in row_keys and row["valid_from"] else None,
             valid_to=_parse_datetime(row["valid_to"]) if "valid_to" in row_keys and row["valid_to"] else None,
@@ -3306,10 +3423,10 @@ class MemoryGraph:
             connection.execute(
                 """
                 INSERT INTO nodes (
-                    id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, embedding,
+                    id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, metadata, embedding,
                     source_prompt, evidence_records, valid_from, valid_to, created_at, updated_at, access_count
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     node.id,
@@ -3321,6 +3438,7 @@ class MemoryGraph:
                     node.content,
                     node.node_type.value,
                     json.dumps(node.tags),
+                    _encode_metadata(node.metadata),
                     embedding_bytes,
                     "",
                     _encode_evidence_records(node.evidence_records),
@@ -3346,6 +3464,7 @@ class MemoryGraph:
             node_type=node_type,
             tags=tags,
             source_prompt=existing.source_prompt,
+            metadata=existing.metadata,
             evidence_records=evidence_records or existing.evidence_records,
             valid_from=valid_from,
             valid_to=valid_to,
@@ -3357,7 +3476,7 @@ class MemoryGraph:
             """
             UPDATE nodes
             SET agent_id = ?, project = ?, session_id = ?, label = ?, content = ?, node_type = ?, tags = ?,
-                embedding = ?, evidence_records = ?, valid_from = ?, valid_to = ?, updated_at = ?
+                metadata = ?, embedding = ?, evidence_records = ?, valid_from = ?, valid_to = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
             """,
             (
@@ -3368,6 +3487,7 @@ class MemoryGraph:
                 node.content,
                 node.node_type.value,
                 json.dumps(node.tags),
+                _encode_metadata(node.metadata),
                 embedding_bytes,
                 _encode_evidence_records(node.evidence_records),
                 node.valid_from.isoformat() if node.valid_from is not None else None,
@@ -3401,10 +3521,10 @@ class MemoryGraph:
         connection.execute(
             """
             INSERT INTO nodes (
-                id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, embedding,
+                id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, metadata, embedding,
                 source_prompt, evidence_records, valid_from, valid_to, created_at, updated_at, access_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 node.id,
@@ -3416,6 +3536,7 @@ class MemoryGraph:
                 node.content,
                 node.node_type.value,
                 json.dumps(node.tags),
+                _encode_metadata(node.metadata),
                 self.embedding_model.to_bytes(self.embedding_model.embed(node.content)),
                 "",
                 _encode_evidence_records([]),
@@ -3539,6 +3660,45 @@ class MemoryGraph:
             return node.created_at.timestamp()
         return 0.0
 
+    def _node_is_superseded(self, node: Node) -> bool:
+        metadata = node.metadata or {}
+        superseded_by = str(metadata.get("superseded_by", "") or "").strip()
+        return bool(superseded_by)
+
+    def _strongest_edge_weight(self, node_id: str, edges: list[Edge]) -> float:
+        strongest = 0.0
+        for edge in edges:
+            if edge.source_id == node_id or edge.target_id == node_id:
+                strongest = max(strongest, max(0.0, min(1.0, float(edge.weight))))
+        return strongest
+
+    def _apply_node_score(
+        self,
+        node: Node,
+        *,
+        similarity: float,
+        edge_weight: float,
+        now: float | None = None,
+    ) -> Node:
+        recency = recency_weight(
+            node.updated_at.timestamp(),
+            now=now,
+            half_life_days=self.recency_half_life_days,
+        )
+        final = score_node(
+            similarity,
+            node.updated_at.timestamp(),
+            edge_weight=edge_weight,
+            now=now,
+            half_life_days=self.recency_half_life_days,
+            superseded=self._node_is_superseded(node),
+        )
+        node.similarity_score = max(0.0, min(1.0, similarity))
+        node.recency_score = recency
+        node.edge_score = max(0.0, min(1.0, edge_weight))
+        node.final_score = final
+        return node
+
     def _sort_scored_nodes(
         self,
         candidate_nodes: list[Node],
@@ -3553,22 +3713,35 @@ class MemoryGraph:
         max_degree: int,
         max_depth: int,
         expanded_depths: dict[str, int],
+        edges: list[Edge] | None = None,
         expansion_metadata: dict[str, ExpansionMeta] | None = None,
     ) -> list[Node]:
+        edges = edges or []
+        now = time.time()
+
         def combined_score(node: Node) -> float:
+            semantic = similarity_by_id.get(node.id, 0.0)
+            lexical = lexical_by_id.get(node.id, 0.0)
+            similarity = max(0.0, min(1.0, (0.8 * semantic) + (0.2 * lexical)))
+            base_edge_weight = self._strongest_edge_weight(node.id, edges)
+            degree_component = degree_by_id.get(node.id, 0) / max_degree if max_degree > 0 else 0.0
+            depth_component = 1.0 / (1.0 + expanded_depths.get(node.id, max_depth + 1))
+            edge_weight = max(base_edge_weight, (0.6 * degree_component) + (0.4 * depth_component))
             base = score_node(
-                node=node,
-                semantic_similarity=similarity_by_id.get(node.id, 0.0),
-                lexical_score=lexical_by_id.get(node.id, 0.0),
-                max_access=max_access,
-                degree_score=(degree_by_id.get(node.id, 0) / max_degree if max_degree > 0 else 0.0),
-                depth=expanded_depths.get(node.id, max_depth + 1),
+                similarity,
+                node.updated_at.timestamp(),
+                edge_weight=edge_weight,
+                now=now,
+                half_life_days=self.recency_half_life_days,
+                superseded=self._node_is_superseded(node),
             ) + temporal_score_adjustment(node, temporal_hints) + negation_boost_by_id.get(node.id, 0.0)
             
             if expansion_metadata is not None and node.id in expansion_metadata:
                 meta = expansion_metadata[node.id]
                 base += RELATION_SCORE_BOOST.get(meta.via_relation, 0.0)
             
+            self._apply_node_score(node, similarity=similarity, edge_weight=edge_weight, now=now)
+            node.final_score = base
             return base
 
         if temporal_hints.recency_mode in {"latest", "oldest"}:
@@ -4033,7 +4206,7 @@ class MemoryGraph:
     ) -> list[str]:
         rows = connection.execute(
             """
-            SELECT n.id, n.agent_id, n.project, n.session_id, n.label, n.content, n.node_type, n.tags, n.source_prompt,
+            SELECT n.id, n.agent_id, n.project, n.session_id, n.label, n.content, n.node_type, n.tags, n.source_prompt, n.metadata,
                    n.evidence_records, n.valid_from, n.valid_to, n.created_at, n.updated_at, n.access_count, n.tenant_id,
                    COUNT(e.id) AS connection_count
             FROM nodes AS n
@@ -4066,7 +4239,7 @@ class MemoryGraph:
         project_lower = project.strip().lower()
         rows = connection.execute(
             """
-            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+            SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                    evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
             FROM nodes
             WHERE tenant_id = ?
@@ -4103,7 +4276,7 @@ class MemoryGraph:
     def _build_backup_snapshot(self, connection: sqlite3.Connection) -> dict[str, Any]:
         node_rows = connection.execute(
             """
-            SELECT id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, source_prompt,
+            SELECT id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
                    evidence_records, valid_from, valid_to, created_at, updated_at, access_count
             FROM nodes
             WHERE tenant_id = ?
@@ -4133,6 +4306,7 @@ class MemoryGraph:
                     "node_type": row["node_type"],
                     "tags": json.loads(row["tags"] or "[]"),
                     "source_prompt": row["source_prompt"] or "",
+                    "metadata": _decode_metadata(row["metadata"]),
                     "evidence_records": [record.model_dump(mode="json") for record in _decode_evidence_records(row["evidence_records"])],
                     "valid_from": row["valid_from"],
                     "valid_to": row["valid_to"],
@@ -4162,10 +4336,10 @@ class MemoryGraph:
         connection.execute(
             """
             INSERT INTO nodes (
-                id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, embedding,
+                id, tenant_id, agent_id, project, session_id, label, content, node_type, tags, metadata, embedding,
                 source_prompt, evidence_records, valid_from, valid_to, created_at, updated_at, access_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_node["id"],
@@ -4177,6 +4351,7 @@ class MemoryGraph:
                 raw_node["content"],
                 raw_node["node_type"],
                 json.dumps(raw_node.get("tags", [])),
+                _encode_metadata(raw_node.get("metadata", {})),
                 embedding,
                 raw_node.get("source_prompt", ""),
                 _encode_evidence_records([EvidenceRecord.model_validate(item) for item in raw_node.get("evidence_records", [])]),
@@ -4193,7 +4368,7 @@ class MemoryGraph:
         connection.execute(
             """
             UPDATE nodes
-            SET tenant_id = ?, agent_id = ?, project = ?, session_id = ?, label = ?, content = ?, node_type = ?, tags = ?, embedding = ?,
+            SET tenant_id = ?, agent_id = ?, project = ?, session_id = ?, label = ?, content = ?, node_type = ?, tags = ?, metadata = ?, embedding = ?,
                 source_prompt = ?, evidence_records = ?, valid_from = ?, valid_to = ?,
                 created_at = ?, updated_at = ?, access_count = ?
             WHERE id = ? AND tenant_id = ?
@@ -4207,6 +4382,7 @@ class MemoryGraph:
                 raw_node["content"],
                 raw_node["node_type"],
                 json.dumps(raw_node.get("tags", [])),
+                _encode_metadata(raw_node.get("metadata", {})),
                 embedding,
                 raw_node.get("source_prompt", ""),
                 _encode_evidence_records([EvidenceRecord.model_validate(item) for item in raw_node.get("evidence_records", [])]),
