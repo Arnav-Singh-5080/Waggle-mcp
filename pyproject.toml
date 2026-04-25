@@ -3,7 +3,6 @@ name = "waggle-mcp"
 version = "0.1.11"
 description = "MCP server that gives LLMs persistent graph-structured memory"
 readme = "README.md"
-license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
   { name = "Abhigyan Shekhar" }
@@ -12,7 +11,6 @@ keywords = ["mcp", "knowledge-graph", "memory", "llm", "context"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -31,10 +29,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Abhigyan-Shekhar/Waggle-mcp"
-Repository = "https://github.com/Abhigyan-Shekhar/Waggle-mcp"
-Documentation = "https://github.com/Abhigyan-Shekhar/Waggle-mcp#readme"
-"Bug Tracker" = "https://github.com/Abhigyan-Shekhar/Waggle-mcp/issues"
+Homepage = "https://pypi.org/project/waggle-mcp/"
+Documentation = "https://pypi.org/project/waggle-mcp/"
 Changelog = "https://pypi.org/project/waggle-mcp/#history"
 
 [project.optional-dependencies]

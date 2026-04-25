@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Abhigyan-Shekhar/graph-memory-mcp/main/assets/banner.png" alt="waggle-mcp" width="720"/>
+  <strong>waggle-mcp</strong>
 </p>
 
 <!-- mcp-name: io.github.Abhigyan-Shekhar/Waggle-mcp -->
@@ -18,12 +18,6 @@
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+"/>
   <img src="https://img.shields.io/badge/MCP-compatible-brightgreen" alt="MCP compatible"/>
   <img src="https://img.shields.io/badge/embeddings-local%2C%20no%20API%20key-orange" alt="Local embeddings"/>
-  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT"/>
-</p>
-
-<p align="center">
-  <a href="https://glama.ai/mcp/servers/Abhigyan-Shekhar/Waggle-mcp"><img src="https://glama.ai/mcp/servers/Abhigyan-Shekhar/Waggle-mcp/badges/card.svg" alt="Waggle-mcp MCP server"/></a>
-  <a href="https://glama.ai/mcp/servers/Abhigyan-Shekhar/Waggle-mcp"><img src="https://glama.ai/mcp/servers/Abhigyan-Shekhar/Waggle-mcp/badges/score.svg" alt="Waggle-mcp MCP server score"/></a>
 </p>
 
 ---
@@ -103,6 +97,26 @@ Running `setup --yes` detects local MCP clients, writes the necessary configurat
 For Codex, `waggle-mcp setup --yes` and `waggle-mcp init` also write a managed Waggle block into `AGENTS.md` in the current workspace so automatic memory is enabled by default for that repo.
 
 Manual MCP setup examples for **Codex**, **Claude Code**, **Gemini CLI**, **Cursor**, and **Antigravity** are in [docs/reference.md](./docs/reference.md#manual-client-configuration).
+
+## Prompt Instructions For Automatic Tool Calls
+
+Registering Waggle as an MCP server only makes the tools available. If you want the agent to call them automatically during normal conversation, add an instruction block like this to your client prompt, rules, or project instructions:
+
+```text
+Use Waggle automatically for conversational memory.
+
+At the start of a new session, if project, agent, or session scope is known, call prime_context.
+
+Before answering questions that may depend on prior decisions, preferences, constraints, project state, or earlier conversation context, call query_graph with the narrowest relevant scope.
+
+After completed turns that contain durable information such as decisions, preferences, constraints, requirements, user corrections, project facts, or meaningful task outcomes, call observe_conversation automatically.
+
+Waggle should remember relevant context automatically. If memory appears empty, the session is likely missing the automatic memory policy or the runtime hooks that call build_context before answers and on_assistant_turn after answers.
+
+Do not ask the user to trigger Waggle manually. Use it in the background when relevant.
+```
+
+Use the same stable `project` value for the same codebase across sessions, or recall will fragment. For Codex workspaces, `waggle-mcp setup --yes` already writes this managed block into `AGENTS.md`.
 
 Comprehensive live feature run (full tool surface, multi-query graph tests, export/import validation):
 [`tests/artifacts/test-run/comprehensive_feature_demo.md`](./tests/artifacts/test-run/comprehensive_feature_demo.md)
@@ -630,7 +644,7 @@ Section `[1] MCP client config files` lists every known config path, whether it 
 
 ## Contributing
 
-PRs and issues are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+This repository is maintained privately. Internal contributors can use the docs in this repo as the source of truth.
 
 ---
 
@@ -644,7 +658,3 @@ Detailed reference material lives in external documentation:
 - **[tests/artifacts/README.md](./tests/artifacts/README.md)**: Benchmark artifacts and traceability.
 
 ---
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
