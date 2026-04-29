@@ -1159,6 +1159,24 @@ def test_observe_conversation_extracts_nodes(tmp_path: Path) -> None:
     assert all(node.valid_from is not None for node in result.stored_nodes)
 
 
+def test_observe_conversation_links_entity_mentions_within_turn(tmp_path: Path) -> None:
+    graph = make_graph(tmp_path)
+
+    result = graph.observe_conversation(
+        user_message="Let's use FastAPI in src/server.py.",
+        assistant_response="Understood.",
+    )
+
+    decision_node = next(node for node in result.stored_nodes if node.node_type == NodeType.DECISION)
+    path_node = next(node for node in result.stored_nodes if node.label == "src/server.py")
+    related = graph.get_related(node_id=decision_node.id, max_depth=1)
+
+    assert any(
+        edge.relationship == RelationType.RELATES_TO and edge.target_id == path_node.id
+        for edge in related.edges
+    )
+
+
 def test_observe_conversation_extracts_favorite_preference_statement(tmp_path: Path) -> None:
     graph = make_graph(tmp_path)
 

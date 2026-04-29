@@ -66,6 +66,25 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       padding: 18px;
       min-height: 100vh;
     }
+    body.focus-graph .shell { grid-template-columns: 92px minmax(0, 1fr) 0; }
+    body.focus-graph .right { display: none; }
+    body.focus-graph .left { width: 92px; overflow: hidden; }
+    body.focus-graph .left .section:not(.brand),
+    body.focus-graph .left .stats,
+    body.focus-graph .left .hint,
+    body.focus-graph .left .collapsible { display: none; }
+    body.focus-graph .left .brand p { display: none; }
+    body.focus-graph .left .brand h1 {
+      font-size: 1.1rem;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      margin: 0 auto;
+    }
+    body.focus-graph .left .toolbar { justify-content: center; }
+    body.readonly-mode .section-card {
+      opacity: 0.55;
+      pointer-events: none;
+    }
     .panel {
       background: var(--panel);
       backdrop-filter: blur(14px);
@@ -86,6 +105,28 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       border-radius: 14px;
       padding: 10px 12px;
     }
+    .substats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .substat {
+      background: rgba(255,255,255,0.34);
+      border: 1px solid rgba(107,98,86,0.1);
+      border-radius: 12px;
+      padding: 9px 10px;
+    }
+    .substat-label {
+      font-size: 0.68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .substat-value {
+      font-size: 1rem;
+      margin-top: 4px;
+    }
     .stat-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
     .stat-value { font-size: 1.3rem; margin-top: 4px; }
     .toolbar, .toolbar-tight { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -95,8 +136,48 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     .field input, .field select, .field textarea { width: 100%; padding: 10px 12px; }
     .field textarea { min-height: 84px; resize: vertical; }
     .hint { font-size: 0.84rem; color: var(--muted); line-height: 1.4; }
-    .list-panel { min-height: 0; display: flex; flex-direction: column; }
-    .scroll { overflow: auto; min-height: 0; }
+    .list-panel { flex: 0 0 auto; }
+    .collapsible {
+      background: rgba(255,255,255,0.38);
+      border: 1px solid rgba(107,98,86,0.12);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .collapsible summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      cursor: pointer;
+      padding: 12px 14px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      user-select: none;
+    }
+    .collapsible summary::-webkit-details-marker { display: none; }
+    .collapsible summary::after {
+      content: "▾";
+      font-size: 0.95rem;
+      color: var(--accent);
+      transition: transform 140ms ease;
+    }
+    .collapsible:not([open]) summary::after { transform: rotate(-90deg); }
+    .collapsible summary span:last-child {
+      color: var(--accent);
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+    }
+    .collapsible.section-card { margin-top: 0; }
+    .collapsible.section-card .section-inner { padding: 0 18px 18px; }
+    .scroll {
+      overflow: auto;
+      min-height: 0;
+      max-height: 260px;
+      padding: 0 14px 14px;
+    }
     .list-item {
       padding: 12px 14px;
       border-radius: 14px;
@@ -168,6 +249,11 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     .pill.alert { background: rgba(180,35,24,0.12); color: var(--danger); }
     .right .section h2, .left .section h2 { margin: 0 0 10px; font-size: 0.95rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
     .readonly { opacity: 0.55; pointer-events: none; }
+    .actionbar .toggle.active {
+      background: linear-gradient(180deg, #11839d 0%, #0e7490 100%);
+      color: white;
+      border-color: #0c6a83;
+    }
     .kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: 0.88rem; }
     .kv div:nth-child(odd) { color: var(--muted); }
     .codebox {
@@ -210,7 +296,7 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     }
   </style>
 </head>
-<body>
+<body class='""" + ("readonly-mode" if read_only else "") + """'>
   <div class="shell">
     <aside class="panel left column">
       <div class="section brand">
@@ -220,6 +306,11 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
           <div class="stat"><div class="stat-label">Nodes</div><div class="stat-value" id="stat-nodes">0</div></div>
           <div class="stat"><div class="stat-label">Edges</div><div class="stat-value" id="stat-edges">0</div></div>
           <div class="stat"><div class="stat-label">Tenant</div><div class="stat-value" id="stat-tenant">-</div></div>
+        </div>
+        <div class="substats">
+          <div class="substat"><div class="substat-label">Connected</div><div class="substat-value" id="stat-connected">0</div></div>
+          <div class="substat"><div class="substat-label">Isolates</div><div class="substat-value" id="stat-isolates">0</div></div>
+          <div class="substat"><div class="substat-label">Clusters</div><div class="substat-value" id="stat-clusters">0</div></div>
         </div>
         <div class="toolbar" style="margin-top:14px;">
           <button class="primary" id="refresh-btn">Refresh</button>
@@ -232,13 +323,17 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
         <div class="field"><input id="search-input" placeholder="Find labels, content, types, tags"></div>
         <div class="hint">""" + ("Read-only mode. Search, inspect, run saved queries, and export." if read_only else "Shift-click for multi-select. Drag empty canvas for box select. Shift-drag from a node to create an edge.") + """</div>
       </div>
-      <div class="section list-panel" style="flex:1;">
-        <h2>Nodes</h2>
-        <div class="scroll" id="node-list"></div>
+      <div class="section list-panel">
+        <details class="collapsible" id="node-panel">
+          <summary><span>Nodes</span><span id="node-panel-count">0</span></summary>
+          <div class="scroll" id="node-list"></div>
+        </details>
       </div>
-      <div class="section list-panel" style="flex:1;">
-        <h2>Edges</h2>
-        <div class="scroll" id="edge-list"></div>
+      <div class="section list-panel">
+        <details class="collapsible" id="edge-panel">
+          <summary><span>Edges</span><span id="edge-panel-count">0</span></summary>
+          <div class="scroll" id="edge-list"></div>
+        </details>
       </div>
     </aside>
 
@@ -253,6 +348,8 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
         <button id="undo-btn">Undo Layout</button>
         <button id="redo-btn">Redo Layout</button>
         <button id="fit-btn">Fit Layout</button>
+        <button id="focus-mode-btn" class="toggle">Focus Mode</button>
+        <button id="labels-btn" class="toggle">Labels Off</button>
         <button id="clear-selection-btn">Clear Selection</button>
         <button id="duplicate-btn">Duplicate Selected</button>
         <button class="danger" id="delete-selected-btn">Delete Selected</button>
@@ -271,79 +368,93 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     </main>
 
     <aside class="panel right column">
-      <div class="section """ + ("readonly" if read_only else "") + """">
-        <h2>Create Node</h2>
-        <div class="field"><label>Label</label><input id="create-node-label"></div>
-        <div class="field"><label>Type</label><select id="create-node-type"></select></div>
-        <div class="field"><label>Content</label><textarea id="create-node-content"></textarea></div>
-        <div class="field"><label>Tags</label><input id="create-node-tags" placeholder="comma,separated,tags"></div>
-        <div class="toolbar-tight">
-          <button class="primary" id="create-node-btn">Add Node</button>
+      <details class="collapsible section-card">
+        <summary><span>Create Node</span><span>Composer</span></summary>
+        <div class="section-inner">
+          <div class="field"><label>Label</label><input id="create-node-label"></div>
+          <div class="field"><label>Type</label><select id="create-node-type"></select></div>
+          <div class="field"><label>Content</label><textarea id="create-node-content"></textarea></div>
+          <div class="field"><label>Tags</label><input id="create-node-tags" placeholder="comma,separated,tags"></div>
+          <div class="toolbar-tight">
+            <button class="primary" id="create-node-btn">Add Node</button>
+          </div>
         </div>
-      </div>
-      <div class="section """ + ("readonly" if read_only else "") + """">
-        <h2>Edit Selection</h2>
-        <div class="hint" id="selection-hint">Select a node or edge to inspect it.</div>
-        <div class="field"><label>Node ID</label><input id="edit-node-id" readonly></div>
-        <div class="field"><label>Label</label><input id="edit-node-label"></div>
-        <div class="field"><label>Content</label><textarea id="edit-node-content"></textarea></div>
-        <div class="field"><label>Tags</label><input id="edit-node-tags"></div>
-        <div class="toolbar-tight">
-          <button id="update-node-btn">Save Node</button>
-          <button class="danger" id="delete-node-btn">Delete Node</button>
+      </details>
+      <details class="collapsible section-card" open>
+        <summary><span>Edit Selection</span><span>Inspector</span></summary>
+        <div class="section-inner">
+          <div class="hint" id="selection-hint">Select a node or edge to inspect it.</div>
+          <div class="field"><label>Node ID</label><input id="edit-node-id" readonly></div>
+          <div class="field"><label>Label</label><input id="edit-node-label"></div>
+          <div class="field"><label>Content</label><textarea id="edit-node-content"></textarea></div>
+          <div class="field"><label>Tags</label><input id="edit-node-tags"></div>
+          <div class="toolbar-tight">
+            <button id="update-node-btn">Save Node</button>
+            <button class="danger" id="delete-node-btn">Delete Node</button>
+          </div>
+          <div class="field" style="margin-top:12px;"><label>Edge ID</label><input id="edit-edge-id" readonly></div>
+          <div class="field"><label>Source</label><select id="edit-edge-source"></select></div>
+          <div class="field"><label>Target</label><select id="edit-edge-target"></select></div>
+          <div class="field"><label>Relationship</label><select id="edit-edge-relationship"></select></div>
+          <div class="field"><label>Weight</label><input id="edit-edge-weight" type="number" step="0.1" min="0" max="1"></div>
+          <div class="toolbar-tight">
+            <button id="update-edge-btn">Save Edge</button>
+            <button class="danger" id="delete-edge-btn">Delete Edge</button>
+          </div>
         </div>
-        <div class="field" style="margin-top:12px;"><label>Edge ID</label><input id="edit-edge-id" readonly></div>
-        <div class="field"><label>Source</label><select id="edit-edge-source"></select></div>
-        <div class="field"><label>Target</label><select id="edit-edge-target"></select></div>
-        <div class="field"><label>Relationship</label><select id="edit-edge-relationship"></select></div>
-        <div class="field"><label>Weight</label><input id="edit-edge-weight" type="number" step="0.1" min="0" max="1"></div>
-        <div class="toolbar-tight">
-          <button id="update-edge-btn">Save Edge</button>
-          <button class="danger" id="delete-edge-btn">Delete Edge</button>
+      </details>
+      <details class="collapsible section-card">
+        <summary><span>Edges And Groups</span><span>Structure</span></summary>
+        <div class="section-inner">
+          <div class="field"><label>Connect Relationship</label><select id="create-edge-relationship"></select></div>
+          <div class="field"><label>Group Label</label><input id="group-label" placeholder="Decision cluster"></div>
+          <div class="field"><label>Group Color</label><input id="group-color" value="#4A90D9"></div>
+          <div class="toolbar-tight">
+            <button class="primary" id="create-group-btn">Group Selection</button>
+            <button id="toggle-group-btn">Collapse Selected Group</button>
+            <button id="delete-group-btn">Delete Selected Group</button>
+          </div>
         </div>
-      </div>
-      <div class="section """ + ("readonly" if read_only else "") + """">
-        <h2>Edges And Groups</h2>
-        <div class="field"><label>Connect Relationship</label><select id="create-edge-relationship"></select></div>
-        <div class="field"><label>Group Label</label><input id="group-label" placeholder="Decision cluster"></div>
-        <div class="field"><label>Group Color</label><input id="group-color" value="#4A90D9"></div>
-        <div class="toolbar-tight">
-          <button class="primary" id="create-group-btn">Group Selection</button>
-          <button id="toggle-group-btn">Collapse Selected Group</button>
-          <button id="delete-group-btn">Delete Selected Group</button>
+      </details>
+      <details class="collapsible section-card">
+        <summary><span>Saved Queries</span><span>Recall</span></summary>
+        <div class="section-inner">
+          <div class="toolbar-tight" id="query-buttons"></div>
+          <div class="field" style="margin-top:12px;"><label>Custom Query</label><textarea id="custom-query" placeholder="FIND nodes WHERE type='decision'"></textarea></div>
+          <div class="toolbar-tight">
+            <button id="run-custom-query-btn">Run Query</button>
+            <button id="clear-query-btn">Clear Query Highlight</button>
+          </div>
+          <div class="query-summary hint" id="query-summary">No query active.</div>
         </div>
-      </div>
-      <div class="section">
-        <h2>Saved Queries</h2>
-        <div class="toolbar-tight" id="query-buttons"></div>
-        <div class="field" style="margin-top:12px;"><label>Custom Query</label><textarea id="custom-query" placeholder="FIND nodes WHERE type='decision'"></textarea></div>
-        <div class="toolbar-tight">
-          <button id="run-custom-query-btn">Run Query</button>
-          <button id="clear-query-btn">Clear Query Highlight</button>
+      </details>
+      <details class="collapsible section-card">
+        <summary><span>ABHI Surface</span><span>Export</span></summary>
+        <div class="section-inner">
+          <div class="kv" id="abhi-overview"></div>
+          <div class="hint" id="abhi-validation-hint" style="margin-top:10px;"></div>
+          <div class="codebox" id="abhi-codebox"></div>
         </div>
-        <div class="query-summary hint" id="query-summary">No query active.</div>
-      </div>
-      <div class="section">
-        <h2>ABHI Surface</h2>
-        <div class="kv" id="abhi-overview"></div>
-        <div class="hint" id="abhi-validation-hint" style="margin-top:10px;"></div>
-        <div class="codebox" id="abhi-codebox"></div>
-      </div>
-      <div class="section """ + ("readonly" if read_only else "") + """">
-        <h2>Import</h2>
-        <div class="field"><label>Format</label><select id="import-format"><option value="abhi">ABHI</option><option value="json">JSON backup</option></select></div>
-        <div class="field"><label>File</label><input id="import-file" type="file"></div>
-        <div class="toolbar-tight"><button class="warn" id="import-btn">Import File</button></div>
-      </div>
-      <div class="section">
-        <h2>Recent Activity</h2>
-        <div class="toolbar-tight" style="margin-bottom:10px;">
-          <button id="activity-24h-btn">24h</button>
-          <button id="activity-7d-btn">7d</button>
-          <button id="activity-30d-btn">30d</button>
+      </details>
+      <details class="collapsible section-card">
+        <summary><span>Import</span><span>Ingest</span></summary>
+        <div class="section-inner">
+          <div class="field"><label>Format</label><select id="import-format"><option value="abhi">ABHI</option><option value="json">JSON backup</option></select></div>
+          <div class="field"><label>File</label><input id="import-file" type="file"></div>
+          <div class="toolbar-tight"><button class="warn" id="import-btn">Import File</button></div>
         </div>
-        <div class="codebox" id="diff-box"></div>
-      </div>
+      </details>
+      <details class="collapsible section-card">
+        <summary><span>Recent Activity</span><span>Timeline</span></summary>
+        <div class="section-inner">
+          <div class="toolbar-tight" style="margin-bottom:10px;">
+            <button id="activity-24h-btn">24h</button>
+            <button id="activity-7d-btn">7d</button>
+            <button id="activity-30d-btn">30d</button>
+          </div>
+          <div class="codebox" id="diff-box"></div>
+        </div>
+      </details>
     </aside>
   </div>
   <div class="status" id="status"></div>
@@ -372,6 +483,8 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       querySummary: "",
       abhi: null,
       diff: null,
+      degreeMap: {},
+      view: {focusMode: false, showLabels: false},
       historyPast: [],
       historyFuture: [],
       activitySince: "24h",
@@ -382,10 +495,15 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       graph: document.getElementById("graph"),
       nodeList: document.getElementById("node-list"),
       edgeList: document.getElementById("edge-list"),
+      nodePanelCount: document.getElementById("node-panel-count"),
+      edgePanelCount: document.getElementById("edge-panel-count"),
       status: document.getElementById("status"),
       statNodes: document.getElementById("stat-nodes"),
       statEdges: document.getElementById("stat-edges"),
       statTenant: document.getElementById("stat-tenant"),
+      statConnected: document.getElementById("stat-connected"),
+      statIsolates: document.getElementById("stat-isolates"),
+      statClusters: document.getElementById("stat-clusters"),
       scopeProject: document.getElementById("scope-project"),
       scopeAgent: document.getElementById("scope-agent"),
       scopeSession: document.getElementById("scope-session"),
@@ -398,6 +516,8 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       diffBox: document.getElementById("diff-box"),
       queryButtons: document.getElementById("query-buttons"),
       selectionHint: document.getElementById("selection-hint"),
+      focusModeBtn: document.getElementById("focus-mode-btn"),
+      labelsBtn: document.getElementById("labels-btn"),
     };
 
     const NODE_TYPES = ["fact", "entity", "concept", "preference", "decision", "question", "note"];
@@ -471,6 +591,35 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
 
     function deepClone(value) {
       return JSON.parse(JSON.stringify(value));
+    }
+
+    function degreeMapForCurrentGraph() {
+      const degree = Object.fromEntries(state.nodes.map((node) => [node.id, 0]));
+      for (const edge of state.edges) {
+        degree[edge.source_id] = (degree[edge.source_id] || 0) + 1;
+        degree[edge.target_id] = (degree[edge.target_id] || 0) + 1;
+      }
+      return degree;
+    }
+
+    function nodeColor(node) {
+      const palette = {
+        fact: "#125b68",
+        entity: "#7c5cff",
+        concept: "#0f766e",
+        preference: "#d97706",
+        decision: "#b42318",
+        question: "#2563eb",
+        note: "#4b5563",
+      };
+      return palette[node.node_type] || "var(--node)";
+    }
+
+    function syncViewButtons() {
+      document.body.classList.toggle("focus-graph", state.view.focusMode);
+      els.focusModeBtn.classList.toggle("active", state.view.focusMode);
+      els.labelsBtn.classList.toggle("active", state.view.showLabels);
+      els.labelsBtn.textContent = state.view.showLabels ? "Labels On" : "Labels Off";
     }
 
     function rememberUiState() {
@@ -555,6 +704,10 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     }
 
     function ensureLayout(nodes) {
+      if (nodes.length >= 80 && layoutLooksLikeRing(nodes)) {
+        smartLayout(nodes);
+        return;
+      }
       const centerX = SVG_WIDTH / 2;
       const centerY = SVG_HEIGHT / 2;
       const radius = Math.min(SVG_WIDTH, SVG_HEIGHT) * 0.34;
@@ -566,6 +719,101 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
             y: centerY + Math.sin(angle) * radius,
           };
         }
+      });
+    }
+
+    function layoutLooksLikeRing(nodes) {
+      const points = nodes.map((node) => state.positions[node.id]).filter(Boolean);
+      if (points.length < Math.min(nodes.length, 40)) return false;
+      const centerX = SVG_WIDTH / 2;
+      const centerY = SVG_HEIGHT / 2;
+      const radii = points.map((pos) => Math.hypot(pos.x - centerX, pos.y - centerY));
+      const mean = radii.reduce((sum, value) => sum + value, 0) / radii.length;
+      if (!mean) return false;
+      const variance = radii.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / radii.length;
+      return Math.sqrt(variance) / mean < 0.16;
+    }
+
+    function connectedComponents(nodes, edges) {
+      const nodeIds = nodes.map((node) => node.id);
+      const nodeSet = new Set(nodeIds);
+      const adjacency = new Map(nodeIds.map((id) => [id, new Set()]));
+      for (const edge of edges) {
+        if (!nodeSet.has(edge.source_id) || !nodeSet.has(edge.target_id)) continue;
+        adjacency.get(edge.source_id).add(edge.target_id);
+        adjacency.get(edge.target_id).add(edge.source_id);
+      }
+      const seen = new Set();
+      const components = [];
+      for (const id of nodeIds) {
+        if (seen.has(id)) continue;
+        const stack = [id];
+        const component = [];
+        seen.add(id);
+        while (stack.length) {
+          const current = stack.pop();
+          component.push(current);
+          for (const next of adjacency.get(current) || []) {
+            if (seen.has(next)) continue;
+            seen.add(next);
+            stack.push(next);
+          }
+        }
+        components.push(component);
+      }
+      return components.sort((left, right) => right.length - left.length);
+    }
+
+    function graphStats() {
+      const nodes = filteredNodes();
+      const edges = filteredEdges();
+      const components = connectedComponents(nodes, edges);
+      const connectedCount = components
+        .filter((component) => component.length > 1)
+        .reduce((sum, component) => sum + component.length, 0);
+      return {
+        connectedCount,
+        isolateCount: Math.max(0, nodes.length - connectedCount),
+        clusterCount: components.filter((component) => component.length > 1).length,
+      };
+    }
+
+    function smartLayout(nodes = filteredNodes()) {
+      const edges = filteredEdges();
+      const components = connectedComponents(nodes, edges);
+      const connected = components.filter((component) => component.length > 1);
+      const isolates = components.filter((component) => component.length === 1).map((component) => component[0]);
+      const gridColumns = Math.max(1, Math.ceil(Math.sqrt(Math.max(connected.length, 1))));
+      const cellWidth = 280;
+      const cellHeight = 220;
+
+      connected.forEach((component, index) => {
+        const col = index % gridColumns;
+        const row = Math.floor(index / gridColumns);
+        const centerX = 200 + col * cellWidth;
+        const centerY = 160 + row * cellHeight;
+        component.forEach((nodeId, componentIndex) => {
+          const degree = state.degreeMap[nodeId] || 0;
+          const ring = Math.floor(componentIndex / 10);
+          const slot = componentIndex % 10;
+          const angle = (Math.PI * 2 * slot) / 10;
+          const radius = 24 + ring * 24 + Math.max(0, 16 - degree * 2);
+          state.positions[nodeId] = {
+            x: centerX + Math.cos(angle) * radius,
+            y: centerY + Math.sin(angle) * radius,
+          };
+        });
+      });
+
+      const isolateColumns = Math.max(1, Math.floor((SVG_WIDTH - 80) / 36));
+      const isolateStartY = Math.max(140 + Math.ceil(connected.length / gridColumns) * cellHeight, 140);
+      isolates.forEach((nodeId, index) => {
+        const col = index % isolateColumns;
+        const row = Math.floor(index / isolateColumns);
+        state.positions[nodeId] = {
+          x: 60 + col * 34,
+          y: isolateStartY + row * 32,
+        };
       });
     }
 
@@ -625,12 +873,11 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       const selected = state.selectedEdgeId === edge.id;
       const queryMatch = state.queryMatchEdgeIds.includes(edge.id);
       const stroke = selected ? "var(--selected)" : (queryMatch ? "var(--query)" : "var(--edge)");
+      const showLabel = selected || queryMatch || filteredEdges().length <= 20;
       return `
         <g class="edge" data-edge-id="${escapeHtml(edge.id)}">
-          <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" stroke="${stroke}" stroke-width="${selected ? 4 : 2.3}" stroke-linecap="round"></line>
-          <text x="${(source.x + target.x) / 2}" y="${(source.y + target.y) / 2 - 10}" text-anchor="middle" font-size="12" fill="var(--muted)">
-            ${escapeHtml(edge.relationship)}
-          </text>
+          <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}" stroke="${stroke}" stroke-width="${selected ? 4 : 1.7}" stroke-linecap="round" opacity="${selected || queryMatch ? "1" : "0.65"}"></line>
+          ${showLabel ? `<text x="${(source.x + target.x) / 2}" y="${(source.y + target.y) / 2 - 10}" text-anchor="middle" font-size="11" fill="var(--muted)">${escapeHtml(edge.relationship)}</text>` : ""}
         </g>`;
     }
 
@@ -638,13 +885,14 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       const pos = state.positions[node.id];
       const selected = state.selectedNodeIds.includes(node.id);
       const queryMatch = state.queryMatchNodeIds.includes(node.id);
-      const radius = selected ? 30 : 24;
-      const fill = selected ? "var(--selected)" : (queryMatch ? "var(--query)" : "var(--node)");
+      const degree = state.degreeMap[node.id] || 0;
+      const radius = selected ? 16 : Math.max(7, Math.min(13, 7 + degree * 1.3));
+      const fill = selected ? "var(--selected)" : (queryMatch ? "var(--query)" : nodeColor(node));
+      const showLabel = state.view.showLabels || selected || queryMatch || degree >= 3;
       return `
         <g class="node" data-node-id="${escapeHtml(node.id)}" transform="translate(${pos.x}, ${pos.y})" style="cursor:move;">
-          <circle r="${radius}" fill="${fill}" stroke="rgba(255,255,255,0.92)" stroke-width="3"></circle>
-          <text y="4" text-anchor="middle" fill="var(--node-text)" font-size="12" font-weight="600">${escapeHtml(shortLabel(node.label, 12))}</text>
-          <text y="${radius + 18}" text-anchor="middle" fill="var(--text)" font-size="12">${escapeHtml(shortLabel(node.label, 22))}</text>
+          <circle r="${radius}" fill="${fill}" stroke="rgba(255,255,255,0.9)" stroke-width="${selected ? 3 : 2}"></circle>
+          ${showLabel ? `<text y="${radius + 16}" text-anchor="middle" fill="var(--text)" font-size="${selected ? "13" : "11"}" font-weight="${selected ? "600" : "500"}">${escapeHtml(shortLabel(node.label, 28))}</text>` : ""}
         </g>`;
     }
 
@@ -689,7 +937,9 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     }
 
     function renderNodeList() {
-      els.nodeList.innerHTML = filteredNodes().map((node) => `
+      const nodes = filteredNodes();
+      els.nodePanelCount.textContent = String(nodes.length);
+      els.nodeList.innerHTML = nodes.map((node) => `
         <div class="list-item ${state.selectedNodeIds.includes(node.id) ? "active" : ""} ${state.queryMatchNodeIds.includes(node.id) ? "query" : ""}" data-node-list-id="${escapeHtml(node.id)}">
           <div class="list-item-title">${escapeHtml(node.label)}</div>
           <div class="list-item-meta">${escapeHtml(node.node_type)} • ${escapeHtml(shortLabel(node.content, 72))}</div>
@@ -703,7 +953,9 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     }
 
     function renderEdgeList() {
-      els.edgeList.innerHTML = filteredEdges().map((edge) => `
+      const edges = filteredEdges();
+      els.edgePanelCount.textContent = String(edges.length);
+      els.edgeList.innerHTML = edges.map((edge) => `
         <div class="list-item ${state.selectedEdgeId === edge.id ? "active" : ""} ${state.queryMatchEdgeIds.includes(edge.id) ? "query" : ""}" data-edge-list-id="${escapeHtml(edge.id)}">
           <div class="list-item-title">${escapeHtml(edge.relationship)}</div>
           <div class="list-item-meta">${escapeHtml(nodeById(edge.source_id)?.label || edge.source_id)} → ${escapeHtml(nodeById(edge.target_id)?.label || edge.target_id)}</div>
@@ -803,6 +1055,10 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
     }
 
     function renderAll() {
+      const stats = graphStats();
+      els.statConnected.textContent = String(stats.connectedCount);
+      els.statIsolates.textContent = String(stats.isolateCount);
+      els.statClusters.textContent = String(stats.clusterCount);
       renderNodeSelectors();
       renderNodeList();
       renderEdgeList();
@@ -812,6 +1068,7 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       renderDiffPanel();
       renderQueryButtons();
       syncUndoButtons();
+      syncViewButtons();
     }
 
     function scheduleSaveLayout() {
@@ -846,6 +1103,7 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       state.tenantId = payload.tenant_id || "";
       state.nodes = payload.nodes || [];
       state.edges = payload.edges || [];
+      state.degreeMap = degreeMapForCurrentGraph();
       state.ui = payload.ui || state.ui;
       state.positions = {...(payload.ui?.positions || {})};
       state.selectedNodeIds = [...(payload.ui?.selected_nodes || [])];
@@ -1164,15 +1422,7 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
 
     function fitLayout() {
       rememberUiState();
-      const nodes = filteredNodes();
-      ensureLayout([]);
-      const centerX = SVG_WIDTH / 2;
-      const centerY = SVG_HEIGHT / 2;
-      const radius = Math.min(SVG_WIDTH, SVG_HEIGHT) * 0.34;
-      nodes.forEach((node, index) => {
-        const angle = (Math.PI * 2 * index) / Math.max(nodes.length, 1);
-        state.positions[node.id] = {x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius};
-      });
+      smartLayout(filteredNodes());
       renderAll();
       scheduleSaveLayout();
     }
@@ -1279,6 +1529,15 @@ def render_graph_editor_html(*, mode: str = "edit") -> str:
       document.getElementById("undo-btn").addEventListener("click", undoUiState);
       document.getElementById("redo-btn").addEventListener("click", redoUiState);
       document.getElementById("fit-btn").addEventListener("click", fitLayout);
+      document.getElementById("focus-mode-btn").addEventListener("click", () => {
+        state.view.focusMode = !state.view.focusMode;
+        syncViewButtons();
+      });
+      document.getElementById("labels-btn").addEventListener("click", () => {
+        state.view.showLabels = !state.view.showLabels;
+        renderGraph();
+        syncViewButtons();
+      });
       document.getElementById("clear-selection-btn").addEventListener("click", clearSelection);
       document.getElementById("duplicate-btn").addEventListener("click", () => duplicateSelected().catch((error) => showStatus(error.message, true)));
       document.getElementById("delete-selected-btn").addEventListener("click", () => deleteSelected().catch((error) => showStatus(error.message, true)));

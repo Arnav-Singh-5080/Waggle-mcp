@@ -32,6 +32,12 @@ The quickest way to understand Waggle is to run the feature demo and the smoke t
 
 That demo exercises the full MCP surface: graph ingestion, retrieval, conflict handling, export/import, and graph inspection.
 
+## Recent Additions
+
+- **Graph Studio refresh:** the local `/graph` editor now has collapsible side panels, focus mode, label toggling, connected/isolate/cluster stats, and a layout that handles sparse graphs better instead of dropping everything into a giant ring.
+- **Broader retrieval:** the new `aggregate_graph` MCP tool returns a wide filtered subgraph for map-reduce style analysis, with optional `node_types`, `tags`, and scope filters.
+- **OOLONG evaluation workflow:** `waggle-mcp benchmark-oolong ...` runs retrieval-only or retrieval+LLM evaluation against OOLONG datasets and can emit JSON reports for offline analysis.
+
 ## Who It's For
 
 **→ Individual developer** extending Claude, Codex, Gemini CLI, Cursor, or Antigravity with persistent memory:
@@ -127,6 +133,8 @@ Comprehensive live feature run (full tool surface, multi-query graph tests, expo
 > `observe_conversation` and `decompose_and_store` create edges automatically.
 > If you only call `store_node`, you get isolated facts — not a connected graph.
 > Always prefer `observe_conversation` for conversational ingestion.
+
+For broad summarization and offline synthesis tasks, prefer `aggregate_graph` over `query_graph` when you want a much larger scoped slice of memory instead of high-precision semantic ranking.
 
 ---
 

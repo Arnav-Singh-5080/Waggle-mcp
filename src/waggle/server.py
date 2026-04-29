@@ -44,6 +44,7 @@ from waggle.graph import MemoryGraph
 from waggle.graph_ui import render_graph_editor_html
 from waggle.logging_utils import configure_logging
 from waggle.metrics import MetricsRegistry
+from waggle.oolong_benchmark import evaluate_oolong, run_subprocess_llm
 from waggle.models import (
     ConflictEntry,
     ConflictListResult,
@@ -348,6 +349,31 @@ class WaggleServer:
                         },
                     },
                     required=["source_id", "target_id", "relationship"],
+                ),
+            ),
+            types.Tool(
+                name="aggregate_graph",
+                description=(
+                    "Retrieve a broad set of nodes bypassing standard semantic limits, optimized for "
+                    "global aggregation and map-reduce tasks. Supports filtering by node_type and tags."
+                ),
+                inputSchema=_object_input_schema(
+                    {
+                        "query": {"type": "string", "description": "Optional natural-language search query to rank the broad retrieval."},
+                        "node_types": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of node types to filter by (e.g., 'fact', 'entity')."
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of tags to require."
+                        },
+                        "max_nodes": {"type": "integer", "description": "Maximum number of nodes to return (default 100, up to 1000)."},
+                        "max_depth": {"type": "integer", "description": "Relationship traversal depth around matching nodes."},
+                        **_scope_properties(),
+                    },
                 ),
             ),
             types.Tool(
@@ -1243,6 +1269,21 @@ class WaggleServer:
                         f"Created edge {edge.id} linking {edge.source_id} to {edge.target_id} as {edge.relationship}.",
                         self._edge_payload(edge),
                     )
+                elif name == "aggregate_graph":
+                    subgraph = graph.aggregate(
+                        query=arguments.get("query", ""),
+                        node_types=arguments.get("node_types"),
+                        tags=arguments.get("tags"),
+                        max_nodes=int(arguments.get("max_nodes", 100)),
+                        max_depth=int(arguments.get("max_depth", 1)),
+                        agent_id=arguments.get("agent_id", ""),
+                        project=arguments.get("project", ""),
+                        session_id=arguments.get("session_id", ""),
+                    )
+                    result = self._tool_result(
+                        serialize_subgraph(subgraph),
+                        self._subgraph_payload(subgraph),
+                    )
                 elif name == "query_graph":
                     subgraph = graph.query(
                         query=arguments["query"],
@@ -1934,6 +1975,12 @@ class WaggleServer:
             self._assert_payload_size(arguments.get("agent_id", ""), limit, "observe_conversation.agent_id")
             self._assert_payload_size(arguments.get("project", ""), limit, "observe_conversation.project")
             self._assert_payload_size(arguments.get("session_id", ""), limit, "observe_conversation.session_id")
+            return
+        if name == "aggregate_graph":
+            self._assert_payload_size(arguments.get("query", ""), limit, "aggregate_graph.query")
+            self._assert_payload_size(arguments.get("agent_id", ""), limit, "aggregate_graph.agent_id")
+            self._assert_payload_size(arguments.get("project", ""), limit, "aggregate_graph.project")
+            self._assert_payload_size(arguments.get("session_id", ""), limit, "aggregate_graph.session_id")
             return
         if name == "query_graph":
             self._assert_payload_size(arguments.get("query", ""), limit, "query_graph.query")
@@ -2715,6 +2762,27 @@ def _build_parser() -> argparse.ArgumentParser:
     load_abhi_chunks.add_argument("--query-id", default="")
     load_abhi_chunks.add_argument("--query-text", default="")
 
+    benchmark_oolong = subparsers.add_parser(
+        "benchmark-oolong",
+        help="Run OOLONG long-context evaluation over Waggle retrieval.",
+        description=(
+            "Load a local OOLONG JSON/JSONL export, index context windows into Waggle, "
+            "retrieve scoped context per question, and optionally score an external LLM over that retrieved bundle."
+        ),
+    )
+    benchmark_oolong.add_argument("dataset_path")
+    benchmark_oolong.add_argument("--dataset-kind", choices=["auto", "real", "synth", "custom"], default="auto")
+    benchmark_oolong.add_argument("--context-field", default="auto")
+    benchmark_oolong.add_argument("--eval-mode", choices=["retrieval_only", "waggle_llm"], default="retrieval_only")
+    benchmark_oolong.add_argument("--llm-command", default="")
+    benchmark_oolong.add_argument("--retrieval-mode", choices=["graph", "fusion", "replay"], default="graph")
+    benchmark_oolong.add_argument("--max-nodes", type=int, default=8)
+    benchmark_oolong.add_argument("--max-depth", type=int, default=1)
+    benchmark_oolong.add_argument("--chunk-lines", type=int, default=12)
+    benchmark_oolong.add_argument("--chunk-overlap-lines", type=int, default=3)
+    benchmark_oolong.add_argument("--limit", type=int, default=None)
+    benchmark_oolong.add_argument("--output", default="")
+
     export_context_bundle = subparsers.add_parser(
         "export-context-bundle",
         help="Export a markdown/json context package for another model or conversation.",
@@ -2960,6 +3028,29 @@ def _run_admin_command(config: AppConfig, args: argparse.Namespace) -> int:
             query_text=getattr(args, "query_text", ""),
         )
         print(json.dumps(loaded.model_dump(mode="json"), indent=2))
+        return 0
+    if args.command == "benchmark-oolong":
+        llm_answerer = None
+        if args.llm_command:
+            llm_answerer = lambda prompt: run_subprocess_llm(prompt, command_template=args.llm_command)
+        report = evaluate_oolong(
+            args.dataset_path,
+            dataset_kind=args.dataset_kind,
+            context_field=args.context_field,
+            embedding_model=EmbeddingModel(config.model_name),
+            eval_mode=args.eval_mode,
+            retrieval_mode=args.retrieval_mode,
+            max_nodes=args.max_nodes,
+            max_depth=args.max_depth,
+            chunk_lines=args.chunk_lines,
+            chunk_overlap_lines=args.chunk_overlap_lines,
+            limit=args.limit,
+            llm_answerer=llm_answerer,
+        )
+        payload = report.to_dict()
+        if args.output:
+            Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(json.dumps(payload, indent=2))
         return 0
     if args.command == "export-context-bundle":
         exported = backend.export_context_bundle(

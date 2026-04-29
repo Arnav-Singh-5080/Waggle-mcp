@@ -124,6 +124,7 @@ def test_parser_accepts_graph_editor_commands() -> None:
     )
     query_args = parser.parse_args(["query", "--input", "memory.abhi", "--query-id", "q1"])
     load_chunks_args = parser.parse_args(["load-chunks", "--input", "memory.abhi", "--chunk-id", "decision_1"])
+    oolong_args = parser.parse_args(["benchmark-oolong", "oolong.jsonl", "--eval-mode", "retrieval_only"])
 
     assert edit_args.command == "edit-graph"
     assert edit_args.port == 8787
@@ -138,6 +139,70 @@ def test_parser_accepts_graph_editor_commands() -> None:
     assert query_args.query_id == "q1"
     assert load_chunks_args.command == "load-chunks"
     assert load_chunks_args.chunk_ids == ["decision_1"]
+    assert oolong_args.command == "benchmark-oolong"
+    assert oolong_args.dataset_path == "oolong.jsonl"
+    assert oolong_args.eval_mode == "retrieval_only"
+
+
+def test_run_admin_command_benchmark_oolong(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    config = AppConfig(
+        backend="sqlite",
+        transport="stdio",
+        model_name="fake-model",
+        db_path=str(tmp_path / "server-memory.db"),
+        default_tenant_id="local-default",
+        http_host="127.0.0.1",
+        http_port=8080,
+        log_level="INFO",
+        rate_limit_rpm=120,
+        write_rate_limit_rpm=60,
+        max_concurrent_requests=8,
+        max_payload_bytes=1024 * 1024,
+        request_timeout_seconds=30,
+        export_dir=None,
+        neo4j_uri="",
+        neo4j_username="",
+        neo4j_password="",
+        neo4j_database="",
+    )
+
+    class FakeReport:
+        def to_dict(self) -> dict[str, object]:
+            return {"case_count": 1, "accuracy": 1.0, "eval_mode": "retrieval_only"}
+
+    captured: dict[str, object] = {}
+
+    def fake_evaluate_oolong(*args: object, **kwargs: object) -> FakeReport:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeReport()
+
+    monkeypatch.setattr("waggle.server.evaluate_oolong", fake_evaluate_oolong)
+
+    args = SimpleNamespace(
+        command="benchmark-oolong",
+        dataset_path="oolong.jsonl",
+        dataset_kind="auto",
+        context_field="auto",
+        eval_mode="retrieval_only",
+        llm_command="",
+        retrieval_mode="graph",
+        max_nodes=8,
+        max_depth=1,
+        chunk_lines=12,
+        chunk_overlap_lines=3,
+        limit=None,
+        output="",
+    )
+
+    exit_code = _run_admin_command(config, args)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert captured["args"] == ("oolong.jsonl",)
+    assert captured["kwargs"]["eval_mode"] == "retrieval_only"
+    assert captured["kwargs"]["retrieval_mode"] == "graph"
+    assert '"accuracy": 1.0' in stdout
 
 
 def test_run_graph_editor_command_opens_browser_and_starts_uvicorn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

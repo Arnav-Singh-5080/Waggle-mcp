@@ -219,6 +219,7 @@ class EmbeddingModel:
                 loaded = self._load_transformer_model()
                 with self._lock:
                     self._model = loaded
+                    self._warmup_started = True
                     if loaded is not None:
                         self._warmup_status = STATUS_READY
                     else:

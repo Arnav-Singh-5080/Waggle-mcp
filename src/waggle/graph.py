@@ -1729,6 +1729,133 @@ class MemoryGraph:
             total_nodes_in_graph=graph_result.total_nodes_in_graph if graph_result is not None else 0,
         )
 
+    def aggregate(
+        self,
+        *,
+        query: str = "",
+        node_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        max_nodes: int = 1000,
+        max_depth: int = 1,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> SubgraphResult:
+        if max_nodes < 1:
+            raise ValueError("max_nodes must be at least 1.")
+        if max_depth < 0:
+            raise ValueError("max_depth cannot be negative.")
+
+        with self._lock, self._connect() as connection:
+            node_rows = connection.execute(
+                """
+                SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type, tags,
+                       source_prompt, metadata, evidence_records, valid_from, valid_to, created_at,
+                       updated_at, access_count, embedding, tenant_id
+                FROM nodes
+                WHERE tenant_id = ?
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+
+            total_nodes = len(node_rows)
+            if total_nodes == 0:
+                return SubgraphResult(query=query, total_nodes_in_graph=0)
+
+            active_session_id = _retrieval_session_scope(
+                agent_id=agent_id,
+                project=project,
+                session_id=session_id,
+            )
+
+            target_types = {t.lower() for t in node_types} if node_types else None
+            target_tags = {t.lower() for t in tags} if tags else None
+
+            candidates: list[Node] = []
+            embeddings_by_id: dict[str, np.ndarray] = {}
+            for row in node_rows:
+                node = self._row_to_node(row)
+                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=active_session_id):
+                    continue
+                if target_types and node.node_type.value.lower() not in target_types:
+                    continue
+                if target_tags:
+                    node_tags = {t.lower() for t in node.tags}
+                    if not any(tag in node_tags for tag in target_tags):
+                        continue
+                candidates.append(node)
+                if row["embedding"] is not None:
+                    embeddings_by_id[node.id] = self.embedding_model.from_bytes(row["embedding"])
+
+            if not candidates:
+                return SubgraphResult(query=query, total_nodes_in_graph=total_nodes)
+
+            if query.strip():
+                expanded_query = self._expand_query_aliases(query)
+                query_embedding = self.embedding_model.embed(expanded_query)
+                
+                scored_candidates = []
+                for node in candidates:
+                    similarity = 0.0
+                    emb = embeddings_by_id.get(node.id)
+                    if emb is not None:
+                        similarity = max(self.embedding_model.cosine_similarity(query_embedding, emb), 0.0)
+                    scored_candidates.append((similarity, node))
+                
+                scored_candidates.sort(key=lambda item: item[0], reverse=True)
+                selected_nodes = [node for _, node in scored_candidates[:max_nodes]]
+            else:
+                candidates.sort(key=lambda node: node.updated_at.timestamp(), reverse=True)
+                selected_nodes = candidates[:max_nodes]
+
+            if max_depth > 0 and selected_nodes:
+                selected_ids = {node.id for node in selected_nodes}
+                expanded_ids = set(selected_ids)
+                current_frontier = set(selected_ids)
+
+                for _ in range(max_depth):
+                    if not current_frontier:
+                        break
+                    next_frontier = set()
+                    edges = self._fetch_edges_for_nodes(connection, list(current_frontier))
+                    for edge in edges:
+                        neighbor_id = edge.target_id if edge.source_id in current_frontier else edge.source_id
+                        if neighbor_id not in expanded_ids:
+                            expanded_ids.add(neighbor_id)
+                            next_frontier.add(neighbor_id)
+                    current_frontier = next_frontier
+
+                if len(expanded_ids) > len(selected_ids):
+                    missing_ids = expanded_ids - selected_ids
+                    if missing_ids:
+                        placeholders = ", ".join("?" for _ in missing_ids)
+                        missing_rows = connection.execute(
+                            f"""
+                            SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type, tags,
+                                   source_prompt, metadata, evidence_records, valid_from, valid_to, created_at,
+                                   updated_at, access_count, embedding, tenant_id
+                            FROM nodes
+                            WHERE tenant_id = ? AND id IN ({placeholders})
+                            """,
+                            (self.tenant_id, *missing_ids)
+                        ).fetchall()
+                        for row in missing_rows:
+                            selected_nodes.append(self._row_to_node(row))
+
+            selected_ids = [node.id for node in selected_nodes]
+            edges = self._fetch_edges_for_nodes(connection, selected_ids)
+            self._increment_access_counts(connection, selected_ids)
+            for node in selected_nodes:
+                node.access_count += 1
+
+            return SubgraphResult(
+                nodes=selected_nodes,
+                edges=edges,
+                retrieval_mode="aggregate",
+                query=query,
+                total_nodes_in_graph=total_nodes,
+            )
+
     def tiered_query(
         self,
         *,
@@ -3665,7 +3792,61 @@ class MemoryGraph:
                     relationship=RelationType.DEPENDS_ON,
                     metadata={"origin": edge_origin},
                 )
+        self._link_observation_candidate_neighbors(
+            stored_candidate_records=stored_candidate_records,
+            edge_origin=edge_origin,
+        )
         return result
+
+    def _link_observation_candidate_neighbors(
+        self,
+        *,
+        stored_candidate_records: list[tuple[Node, list[str]]],
+        edge_origin: str,
+    ) -> None:
+        if len(stored_candidate_records) < 2:
+            return
+
+        category_tags = {"database", "backend-framework", "frontend-framework", "auth-mechanism", "api-style"}
+        created_pairs: set[tuple[str, str, str]] = set()
+
+        for index, (source_node, source_tags) in enumerate(stored_candidate_records):
+            source_text = normalize_text(f"{source_node.label} {source_node.content}")
+            source_categories = {tag for tag in source_tags if tag in category_tags}
+            source_tokens = tokenize_text(source_node.content)
+            for target_node, target_tags in stored_candidate_records[index + 1:]:
+                if source_node.id == target_node.id:
+                    continue
+
+                target_text = normalize_text(f"{target_node.label} {target_node.content}")
+                target_categories = {tag for tag in target_tags if tag in category_tags}
+                target_tokens = tokenize_text(target_node.content)
+
+                edge_specs: list[tuple[str, str, RelationType, str]] = []
+                if target_node.node_type == NodeType.ENTITY and normalize_text(target_node.label) in source_text:
+                    edge_specs.append((source_node.id, target_node.id, RelationType.RELATES_TO, "entity-mention"))
+                if source_node.node_type == NodeType.ENTITY and normalize_text(source_node.label) in target_text:
+                    edge_specs.append((target_node.id, source_node.id, RelationType.RELATES_TO, "entity-mention"))
+
+                shared_tokens = source_tokens & target_tokens
+                has_shared_category = bool(source_categories & target_categories)
+                if not edge_specs and source_node.node_type != NodeType.ENTITY and target_node.node_type != NodeType.ENTITY:
+                    if len(shared_tokens) >= 2 or has_shared_category:
+                        inferred_relation = infer_relationship(source_node, target_node, shared_tokens=shared_tokens)
+                        reason = "shared-category" if has_shared_category and len(shared_tokens) < 2 else "shared-tokens"
+                        edge_specs.append((source_node.id, target_node.id, inferred_relation, reason))
+
+                for from_id, to_id, relationship, reason in edge_specs:
+                    key = (from_id, to_id, relationship.value)
+                    if key in created_pairs:
+                        continue
+                    self.add_edge(
+                        source_id=from_id,
+                        target_id=to_id,
+                        relationship=relationship,
+                        metadata={"origin": edge_origin, "inferred": reason},
+                    )
+                    created_pairs.add(key)
 
     def observe_conversation(
         self,

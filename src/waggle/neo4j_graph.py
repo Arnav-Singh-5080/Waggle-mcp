@@ -870,6 +870,98 @@ class Neo4jMemoryGraph:
             "tiered_result_mode": "flat_fallback",
         }
 
+    def aggregate(
+        self,
+        *,
+        query: str = "",
+        node_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        max_nodes: int = 1000,
+        max_depth: int = 1,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> SubgraphResult:
+        query_text = query.strip()
+        if max_nodes < 1:
+            raise ValueError("max_nodes must be at least 1.")
+        if max_depth < 0:
+            raise ValueError("max_depth cannot be negative.")
+
+        with self._lock, self._session() as session:
+            node_records = [
+                record["n"]
+                for record in session.run(
+                    "MATCH (n:MemoryNode {tenant_id: $tenant_id}) RETURN n",
+                    tenant_id=self.tenant_id,
+                )
+            ]
+            total_nodes = len(node_records)
+            if total_nodes == 0:
+                return SubgraphResult(query=query_text, total_nodes_in_graph=0)
+
+            target_types = {t.lower() for t in node_types} if node_types else None
+            target_tags = {t.lower() for t in tags} if tags else None
+
+            candidates: list[Node] = []
+            embeddings_by_id: dict[str, np.ndarray] = {}
+            for props in node_records:
+                node = self._node_from_props(props)
+                if not _scope_matches(node, agent_id=agent_id, project=project, session_id=session_id):
+                    continue
+                if target_types and node.node_type.value.lower() not in target_types:
+                    continue
+                if target_tags:
+                    node_tags = {t.lower() for t in node.tags}
+                    if not any(tag in node_tags for tag in target_tags):
+                        continue
+                candidates.append(node)
+                if props.get("embedding"):
+                    embeddings_by_id[node.id] = np.array(props["embedding"], dtype=np.float32)
+
+            if not candidates:
+                return SubgraphResult(query=query_text, total_nodes_in_graph=total_nodes)
+
+            if query_text:
+                query_embedding = self.embedding_model.embed(query_text)
+                scored_candidates = []
+                for node in candidates:
+                    similarity = 0.0
+                    emb = embeddings_by_id.get(node.id)
+                    if emb is not None:
+                        similarity = max(self.embedding_model.cosine_similarity(query_embedding, emb), 0.0)
+                    scored_candidates.append((similarity, node))
+                scored_candidates.sort(key=lambda item: item[0], reverse=True)
+                selected_nodes = [node for _, node in scored_candidates[:max_nodes]]
+            else:
+                candidates.sort(key=lambda node: node.updated_at.timestamp(), reverse=True)
+                selected_nodes = candidates[:max_nodes]
+
+            if max_depth > 0 and selected_nodes:
+                selected_ids = [node.id for node in selected_nodes]
+                graph = self._load_graph(session)
+                expanded_depths = self._expand_node_depths(graph, selected_ids, max_depth)
+                expanded_ids = set(expanded_depths.keys())
+                missing_ids = expanded_ids - {node.id for node in selected_nodes}
+                if missing_ids:
+                    for props in node_records:
+                        if props["id"] in missing_ids:
+                            selected_nodes.append(self._node_from_props(props))
+
+            selected_ids = [node.id for node in selected_nodes]
+            edges = self._fetch_edges_for_nodes(session, selected_ids)
+            self._increment_access_counts(session, selected_ids)
+            for node in selected_nodes:
+                node.access_count += 1
+
+            return SubgraphResult(
+                nodes=selected_nodes,
+                edges=edges,
+                retrieval_mode="aggregate",
+                query=query_text,
+                total_nodes_in_graph=total_nodes,
+            )
+
     def query(
         self,
         *,
