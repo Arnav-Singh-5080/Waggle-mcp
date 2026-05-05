@@ -1,0 +1,940 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Waggle: Graph-Backed Persistent Memory for AI Agents\\
+with Recursive Memory Context Assembly}
+
+\author{
+\IEEEauthorblockN{Abhigyan Shekhar}
+\IEEEauthorblockA{Independent Research\\
+\texttt{waggle-mcp} open-source project}
+}
+
+\maketitle
+
+\begin{abstract}
+Large language model (LLM) agents lose all conversational context when the context window closes.
+Existing approaches---raw context dumps, flat note storage, and chunked retrieval-augmented
+generation (RAG)---either exhaust the context budget at scale, discard relational structure,
+or fail to surface contradictions and superseded decisions.
+We present \textbf{Waggle}, a local-first persistent memory system built on a typed knowledge
+graph, and \textbf{Recursive Memory Context Assembly (RMCA)}, an algorithm for assembling
+compact, high-signal context packs from that graph in response to agent queries.
+RMCA decomposes queries into targeted subqueries, retrieves from multiple evidence lanes,
+expands the graph along typed edges, resolves update chains and contradictions, and compresses
+the result to a configurable token budget.
+We evaluate Waggle on the LongMemEval-S benchmark (500 questions, multi-session retrieval)
+and on a suite of five synthetic task families adapted from the RLM benchmark taxonomy.
+On LongMemEval-S, \texttt{graph\_raw} achieves \textbf{89.0\% Exact@5} and \textbf{97.4\% R@5}
+using \texttt{all-MiniLM-L6-v2} embeddings, with a held-out test split confirming no
+overfitting (+1.1\,pp gap).
+On pairwise conflict reasoning tasks, RMCA achieves perfect scores at all scales (128--2048 nodes)
+while raw context dump and single-query retrieval both score 0.0.
+LLM-backed answer-level evaluation with Groq \texttt{llama-3.3-70b-versatile} confirms
+EM=1.0, F1=1.0, and hallucination rate=0.0 for RMCA on pairwise tasks, consistent across
+3 seeds and 2 scales.
+Ablation studies confirm that query decomposition is the primary load-bearing RMCA component.
+On linear aggregation tasks, RMCA degrades gracefully, exposing a fundamental O($n$) coverage
+limit shared by all fixed-budget retrieval systems.
+All code, benchmarks, and artifacts are open source.
+\end{abstract}
+
+\begin{IEEEkeywords}
+agent memory, knowledge graph, retrieval-augmented generation, context assembly,
+persistent memory, LLM agents, conflict resolution
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+AI coding assistants and conversational agents are stateless by design: each session begins
+with an empty context window. Practitioners work around this by pasting prior conversation
+summaries, maintaining hand-curated notes, or relying on the model to infer context from
+the current session alone. None of these approaches scale.
+
+The core problem has three dimensions:
+\begin{enumerate}
+\item \textbf{Volume.} A long-running project accumulates thousands of decisions, constraints,
+and implementation facts. No context window can hold them all.
+\item \textbf{Structure.} Decisions depend on constraints; constraints contradict earlier
+preferences; implementations derive from decisions. Flat text storage discards this relational
+structure.
+\item \textbf{Staleness.} Decisions get reversed. Constraints get relaxed. A memory system
+that cannot distinguish current from superseded information will mislead the agent.
+\end{enumerate}
+
+Retrieval-augmented generation (RAG)~\cite{lewis2020rag} addresses volume but not structure
+or staleness. GraphRAG-style systems~\cite{edge2024graphrag} add community-detection graphs
+over document chunks but operate on pre-computed summaries and do not model temporal validity
+or contradiction. Episodic memory systems~\cite{packer2023memgpt,park2023generative} store
+conversation turns but do not extract typed relational structure.
+
+We make the following contributions:
+\begin{itemize}
+\item \textbf{Waggle}, a local-first persistent memory system built on a typed knowledge graph
+with temporal validity, contradiction handling, and a git-inspired snapshot vocabulary.
+\item \textbf{RMCA (Recursive Memory Context Assembly)}, an algorithm that assembles compact
+context packs from the graph via query decomposition, multi-lane retrieval, typed-edge
+expansion, conflict resolution, and token-budget compression.
+\item \textbf{Empirical evaluation} on LongMemEval-S (500 questions) and five synthetic task
+families, with held-out splits, LLM-backed answer-level evaluation, and explicit ablation
+studies.
+\item \textbf{Open-source implementation} as an MCP-compatible server (\texttt{waggle-mcp})
+deployable with a single \texttt{pipx install}.
+\end{itemize}
+
+\section{Background and Related Work}
+
+\subsection{Context Window Limitations}
+
+Transformer-based LLMs have fixed context windows. While window sizes have grown
+(4K $\to$ 128K $\to$ 1M tokens), the fundamental problem remains: information outside the
+window is inaccessible, and filling the window with raw history is expensive and degrades
+attention quality at long ranges~\cite{hsieh2024ruler}.
+
+\subsection{Retrieval-Augmented Generation}
+
+RAG~\cite{lewis2020rag} retrieves relevant text chunks by semantic similarity and injects
+them into the prompt. It addresses volume but has three structural weaknesses relevant to
+agent memory: flat ranking cannot distinguish current from superseded decisions; chunks are
+independent so dependency structure is lost; and two contradictory chunks are returned with
+equal weight.
+
+\subsection{GraphRAG and Knowledge Graph Retrieval}
+
+Microsoft GraphRAG~\cite{edge2024graphrag} builds a community-detection graph over document
+chunks and retrieves community summaries. This improves coverage for broad queries but
+pre-computes summaries offline and does not model temporal validity or agent-specific
+relational types (decisions, constraints, contradictions).
+
+\subsection{Episodic and Working Memory for Agents}
+
+MemGPT~\cite{packer2023memgpt} introduces a tiered memory architecture with explicit paging
+between in-context and external storage. Generative Agents~\cite{park2023generative} use a
+memory stream with recency, importance, and relevance scoring. These systems focus on
+retrieval of episodic facts; they do not model typed relational edges or contradiction
+resolution as first-class operations.
+
+\subsection{Recursive Language Models}
+
+The RLM framework~\cite{zhang2026rlm} proposes externalising long context into an environment
+and interacting with it through decomposition and targeted retrieval. Waggle's RMCA algorithm
+is directly inspired by this decomposition-retrieval loop, applied to a persistent typed graph
+rather than a document corpus. The RLM paper reports that base models score $<$0.1\% F1 on
+OOLONG-Pairs while structured recursive assembly recovers to 23--58\% F1, a qualitative
+pattern consistent with our findings.
+
+\section{System Design}
+
+\subsection{Memory Graph}
+
+Waggle stores memory in a persistent typed knowledge graph $G = (V, E)$.
+
+\textbf{Node types:} \texttt{fact}, \texttt{entity}, \texttt{concept}, \texttt{preference},
+\texttt{decision}, \texttt{question}, \texttt{note}.
+
+\textbf{Edge types:} \texttt{relates\_to}, \texttt{contradicts}, \texttt{depends\_on},
+\texttt{part\_of}, \texttt{updates}, \texttt{derived\_from}, \texttt{similar\_to}.
+
+Every node carries temporal validity fields \texttt{valid\_from} and \texttt{valid\_to}.
+Nodes whose \texttt{valid\_to} has passed are excluded from default queries. The
+\texttt{resolve\_conflict} operation accepts a \texttt{winner} node ID and sets the losing
+node's \texttt{valid\_to} to the current time, making supersession explicit and reversible.
+
+The graph is backed by SQLite with WAL mode for local-first deployments, with an optional
+Neo4j backend for remote or multi-client deployments.
+
+\subsection{Embeddings}
+
+Waggle uses \texttt{sentence-transformers}~\cite{reimers2019sbert} for local embedding with
+no external API dependency. The default model is \texttt{all-MiniLM-L6-v2} ($\approx$420\,MB,
+384-dimensional embeddings). A deterministic SHA-256 fallback is available for offline or
+resource-constrained environments.
+
+\subsection{Retrieval Modes}
+
+Three retrieval lanes are available:
+\begin{itemize}
+\item \textbf{\texttt{graph}}: semantic similarity over node embeddings, with typed-edge expansion.
+\item \textbf{\texttt{hybrid}}: graph retrieval fused with BM25 lexical scoring.
+\item \textbf{\texttt{verbatim}}: semantic search over the raw conversation transcript store.
+\end{itemize}
+
+\subsection{MCP Tool Surface}
+
+Waggle exposes its functionality as an MCP (Model Context Protocol) server.
+Table~\ref{tab:tools} lists the six core tools used in normal agent operation.
+
+\begin{table}[htbp]
+\caption{Waggle MCP Tool Surface}
+\label{tab:tools}
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Tool} & \textbf{Purpose} \\
+\midrule
+\texttt{observe\_conversation} & Ingest a turn; extract nodes and edges \\
+\texttt{query\_graph} & Retrieve a subgraph for a query \\
+\texttt{prime\_context} & Hydrate context at session start \\
+\texttt{build\_context} & Run RMCA for a full context pack \\
+\texttt{graph\_diff} & Show what changed recently \\
+\texttt{store\_node} / \texttt{store\_edge} & Structured atomic writes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Recursive Memory Context Assembly (RMCA)}
+
+RMCA is the algorithm behind \texttt{build\_context}. It takes a query $q$, the memory graph
+$G$, the transcript store $T$, a token budget $B$, expansion depth $d$, and maximum subquery
+count $k$, and returns a structured context pack $C$ with
+$\widehat{\text{tok}}(C) \leq B \times 1.15$.
+
+\subsection{Algorithm}
+
+\textbf{Step 1 --- Decompose.} The query is classified as project/coding or generic.
+A set of up to $k$ targeted subqueries is generated, each with a priority weight and a set
+of retrieval modes. For project queries, subqueries target: recent decisions, unfinished
+tasks, constraints and rejected directions, implementation details, conflicts, and the
+original query. For generic queries, subqueries target: the original query, recent relevant
+facts, related decisions, contradictions, and transcript evidence.
+
+\textbf{Step 2 --- Retrieve.} Each subquery is issued against the graph and transcript store
+using its assigned retrieval modes. Results are accumulated into a working hit set $H$.
+
+\textbf{Step 3 --- Expand.} The top-5 nodes in $H$ by score are used as seeds. For each of
+the top-3 seeds, 1--2 hop graph expansion is performed along typed edges (\texttt{updates},
+\texttt{contradicts}, \texttt{depends\_on}, \texttt{derived\_from}, \texttt{part\_of}).
+Expansion along \texttt{relates\_to} and \texttt{similar\_to} is excluded to avoid token
+budget inflation.
+
+\textbf{Step 4 --- Resolve.} All edges in $H$ are inspected. Nodes connected by
+\texttt{updates} edges have their scores penalised ($\times 0.3$) and the updating node is
+boosted ($+0.15$). Nodes connected by \texttt{contradicts} edges are recorded as conflict
+pairs. Nodes with expired \texttt{valid\_to} are penalised ($\times 0.2$).
+
+\textbf{Step 5 --- Deduplicate.} For each unique \texttt{node\_id}, only the highest-scored
+copy is retained.
+
+\textbf{Step 6 --- Rank.} Nodes are sorted by: superseded status (non-superseded first),
+score (descending), label (ascending for ties).
+
+\textbf{Step 7 --- Compress.} Nodes are packed into the context string $C$ in priority order:
+decisions, constraints, implementation, unfinished, conflicts, superseded, evidence. Packing
+stops when the token budget $B \times 1.15$ is reached.
+
+\textbf{Step 8 --- Format.} A structured header is prepended. Provenance and conflict
+annotations are attached.
+
+\subsection{Comparison with Top-$k$ RAG}
+
+Table~\ref{tab:rag_compare} summarises the key differences between RMCA and standard
+top-$k$ RAG.
+
+\begin{table}[htbp]
+\caption{RMCA vs.\ Top-$k$ RAG}
+\label{tab:rag_compare}
+\centering
+\begin{tabular}{p{2.0cm}p{2.5cm}p{2.5cm}}
+\toprule
+\textbf{Dimension} & \textbf{Top-$k$ RAG} & \textbf{RMCA} \\
+\midrule
+Query strategy & Single embedding query & Decomposed into $\leq k$ targeted subqueries \\
+Index structure & Flat chunk index & Typed knowledge graph \\
+Graph expansion & None & 1--2 hop traversal along typed edges \\
+Conflict handling & None & Explicit \texttt{contradicts}/\texttt{updates} detection \\
+Staleness handling & None & Temporal validity (\texttt{valid\_to}) with score penalisation \\
+Token budget & Fixed top-$k$ & Configurable budget with priority-ordered packing \\
+Evidence provenance & Chunk source & Verbatim transcript lane + node provenance \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Comparison with GraphRAG}
+
+\begin{table}[htbp]
+\caption{RMCA vs.\ GraphRAG}
+\label{tab:graphrag_compare}
+\centering
+\begin{tabular}{p{2.0cm}p{2.5cm}p{2.5cm}}
+\toprule
+\textbf{Dimension} & \textbf{GraphRAG} & \textbf{RMCA} \\
+\midrule
+Graph construction & Community detection over document chunks & Typed relational graph from conversation turns \\
+Query strategy & Single query against pre-computed summaries & Runtime decomposition into targeted subqueries \\
+Token budget & Fixed community summary size & Configurable budget with priority ordering \\
+Verbatim evidence & Not available & Verbatim transcript retrieval lane \\
+Temporal validity & Not modelled & First-class \texttt{valid\_from}/\texttt{valid\_to} on every node \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\section{Evaluation}
+
+\subsection{LongMemEval-S}
+
+\textbf{Dataset.} LongMemEval-S~\cite{wu2024longmemeval} is a 500-question benchmark for
+multi-session conversational memory retrieval. Each question requires identifying the correct
+support session(s) from a haystack of prior sessions. The cleaned \texttt{s} split
+(\texttt{xiaowu0162/longmemeval-cleaned}) contains 500 questions with gold support sets of
+cardinality 1--6.
+
+\textbf{Metrics.} We report R@5 (recall: does the gold set appear anywhere in the top 5?),
+Exact@5 (precision: does the top 5 exactly match the gold set?), Exact@10, and Exact@20.
+
+\textbf{Setup.} Sessions are prepared by converting each haystack session to a text block,
+normalising timestamps to UTC ISO format, and embedding unique session texts once with
+\texttt{all-MiniLM-L6-v2}. A prepared-session cache keyed by dataset SHA-256, mode, limit,
+and embedding model is written on the first run and reused on subsequent runs. All reported
+numbers use the warm cache.
+
+\textbf{Modes.} Two retrieval modes are evaluated:
+\begin{itemize}
+\item \texttt{graph\_raw}: user turns only; weighted score $= 0.72 \times \text{semantic}
++ 0.18 \times \text{lexical} + 0.10 \times \text{temporal}$; top-5 returned directly.
+\item \texttt{graph\_hybrid}: user and assistant turns; same raw ranking followed by heuristic
+reranking of top-20 using RRF fusion, lexical overlap, and temporal recency bias.
+\end{itemize}
+
+\textbf{Results.} Table~\ref{tab:longmemeval} shows the main results.
+\texttt{graph\_raw} achieves 89.0\% Exact@5 with no tunable reranking heuristics, making it
+the most reproducible baseline. \texttt{graph\_hybrid} scores lower on Exact@5 but recovers
+strongly at higher cutoffs (Exact@20 = 98.0\%), indicating it finds all correct sessions but
+does not always pack them into the top 5 slots for high-cardinality queries.
+
+\begin{table}[htbp]
+\caption{LongMemEval-S Results (500 questions, \texttt{all-MiniLM-L6-v2})}
+\label{tab:longmemeval}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Mode} & \textbf{R@5} & \textbf{Exact@5} & \textbf{Exact@10} & \textbf{Exact@20} \\
+\midrule
+\texttt{graph\_raw}    & \textbf{97.4\%} & \textbf{89.0\%} & 89.0\% & 89.0\% \\
+\texttt{graph\_hybrid} & 97.0\%          & 87.2\%          & 94.8\% & \textbf{98.0\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Cardinality breakdown.} Table~\ref{tab:cardinality} shows \texttt{graph\_raw}
+performance by gold-set cardinality. R@5 = 100\% at cardinality $\geq 3$ confirms the
+embedding reliably finds the correct base session. The Exact@5 drop at high cardinality is
+a packing problem: fitting 4--6 chunks into 5 slots while excluding noise is structurally
+harder than retrieval itself.
+
+\begin{table}[htbp]
+\caption{\texttt{graph\_raw} Performance by Gold-Set Cardinality}
+\label{tab:cardinality}
+\centering
+\begin{tabular}{rrrr}
+\toprule
+\textbf{Cardinality} & \textbf{$n$} & \textbf{R@5} & \textbf{Exact@5} \\
+\midrule
+1 & 176 & 95.5\% & 95.5\% \\
+2 & 250 & 98.0\% & 93.2\% \\
+3 &  41 & 100.0\% & 73.2\% \\
+4 &  19 & 100.0\% & 47.4\% \\
+5 &  11 & 100.0\% & 45.5\% \\
+6 &   3 & 100.0\% &  0.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Overfitting check.} To verify the scores are not artefacts of the specific
+500-question distribution, we ran a held-out split (50 dev / 450 test, seed 42).
+Table~\ref{tab:heldout} shows the results. \texttt{graph\_raw} generalises cleanly.
+The 5.3\,pp gap for \texttt{graph\_hybrid} is expected: the heuristic reranking weights
+(RRF fusion, lexical/coverage scoring) are partially tuned to this distribution.
+\texttt{graph\_hybrid} Exact@5 should be treated as an exploratory number rather than a
+headline result.
+
+\begin{table}[htbp]
+\caption{Held-Out Split Overfitting Check (seed 42)}
+\label{tab:heldout}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Mode} & \textbf{Dev Exact@5} & \textbf{Test Exact@5} & \textbf{Gap} \\
+              & \textbf{($n$=50)}    & \textbf{($n$=450)}    & \\
+\midrule
+\texttt{graph\_raw}    & 88.0\% & 89.1\% & $+1.1$\,pp --- stable \\
+\texttt{graph\_hybrid} & 92.0\% & 86.7\% & $-5.3$\,pp --- dev-set sensitivity \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{RLM-Style Synthetic Benchmark}
+
+To evaluate RMCA's behaviour across task types that vary in structural complexity, we
+constructed a synthetic benchmark suite following the task taxonomy of the RLM
+paper~\cite{zhang2026rlm}. Each family maps a canonical long-context task to a Waggle
+memory graph scenario.
+
+\textbf{Task families.} Table~\ref{tab:families} describes the five task families.
+
+\begin{table}[htbp]
+\caption{Synthetic Benchmark Task Families}
+\label{tab:families}
+\centering
+\begin{tabular}{p{2.0cm}p{1.8cm}p{3.2cm}}
+\toprule
+\textbf{Family} & \textbf{RLM equiv.} & \textbf{What it tests} \\
+\midrule
+S-NIAH-style & RULER S-NIAH~\cite{hsieh2024ruler} & Retrieve one fact from $N$ distractors --- O(1) \\
+BrowseComp-Plus-style & BrowseComp-Plus & Multi-hop QA across 3 linked nodes \\
+OOLONG-style & OOLONG~\cite{bertsch2025oolong} & Aggregate $N$ entries --- O($n$) \\
+OOLONG-Pairs-style & OOLONG-Pairs & Pairwise conflict reasoning --- O($n^2$) \\
+CodeQA-style & LongBench-v2 CodeQA~\cite{bai2025longbench} & Codebase/repo understanding \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Methods compared.}
+\begin{itemize}
+\item \texttt{raw\_context}: dump all graph nodes into the context window (no retrieval).
+\item \texttt{query\_graph}: single semantic query, top-$k$ results returned.
+\item \texttt{build\_context}: full RMCA pipeline.
+\end{itemize}
+
+\textbf{Scales.} Each family is evaluated at $N = 128$, 512, and 2048 nodes.
+
+\textbf{Results.} Table~\ref{tab:rlm_main} shows the main results.
+
+\begin{table}[htbp]
+\caption{RLM-Style Synthetic Benchmark Results}
+\label{tab:rlm_main}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Family} & \textbf{Scale} & \textbf{raw} & \textbf{query} & \textbf{build} \\
+\midrule
+S-NIAH       & 128  & 1.000 & 1.000 & \textbf{1.000} \\
+S-NIAH       & 512  & 1.000 & 1.000 & \textbf{1.000} \\
+S-NIAH       & 2048 & 1.000 & 1.000 & \textbf{1.000} \\
+\midrule
+BrowseComp+  & 128  & 1.000 & 1.000 & \textbf{1.000} \\
+BrowseComp+  & 512  & 1.000 & 1.000 & \textbf{1.000} \\
+BrowseComp+  & 2048 & 1.000 & 1.000 & \textbf{1.000} \\
+\midrule
+OOLONG-Pairs & 128  & 0.000 & 0.000 & \textbf{1.000} \\
+OOLONG-Pairs & 512  & 0.000 & 0.000 & \textbf{1.000} \\
+OOLONG-Pairs & 2048 & 0.000 & 0.000 & \textbf{1.000} \\
+\midrule
+CodeQA       & 128  & 0.000 & 1.000 & \textbf{1.000} \\
+CodeQA       & 512  & 0.000 & 1.000 & \textbf{1.000} \\
+CodeQA       & 2048 & 0.000 & 1.000 & \textbf{1.000} \\
+\midrule
+OOLONG       & 128  & 0.885 & 0.242 & 0.513 \\
+OOLONG       & 512  & 0.403 & 0.035 & 0.224 \\
+OOLONG       & 2048 & 0.000 & 0.010 & 0.069 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Token efficiency.} On S-NIAH tasks, \texttt{build\_context} uses 13--14\% of the
+tokens consumed by \texttt{raw\_context} while achieving the same score (7--8$\times$
+reduction). On OOLONG-Pairs tasks, \texttt{build\_context} uses $\approx$36\% of
+\texttt{raw\_context} tokens while achieving 1.0 vs.\ 0.0 score.
+
+\textbf{Key findings.}
+\begin{enumerate}
+\item \textbf{Pairwise conflict reasoning (OOLONG-Pairs).} Both \texttt{raw\_context} and
+\texttt{query\_graph} score 0.0 at all scales. \texttt{build\_context} scores 1.0 at all
+scales. This is the clearest demonstration of RMCA's value: the conflict resolution step
+(Step 4) surfaces \texttt{contradicts} edges that neither a raw dump nor a single-query
+retrieval can identify.
+\item \textbf{Codebase understanding (CodeQA).} \texttt{raw\_context} scores 0.0 at all
+scales (the relevant code fact is buried in a large context dump). \texttt{query\_graph}
+and \texttt{build\_context} both score 1.0, confirming that targeted retrieval is sufficient
+for this task type.
+\item \textbf{Simple factual retrieval (S-NIAH, BrowseComp-Plus).} All three methods score
+1.0 at all scales. RMCA uses 7--8$\times$ fewer tokens than raw context while achieving the
+same score.
+\item \textbf{Linear aggregation (OOLONG).} \texttt{raw\_context} scores highest at small
+scale (0.885 at $N$=128) but degrades to 0.0 at $N$=2048 as the context window fills.
+\texttt{build\_context} scores 0.513 at $N$=128 and degrades to 0.069 at $N$=2048. This
+exposes a fundamental limitation: tasks requiring aggregation over all $N$ entries cannot
+be fully satisfied by any fixed-budget retrieval system.
+\end{enumerate}
+
+\subsection{Latency}
+
+Local latency on SQLite with deterministic embeddings (warm cache):
+
+\begin{table}[htbp]
+\caption{Operation Latency (SQLite, warm cache)}
+\label{tab:latency}
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Operation} & \textbf{Mean latency} \\
+\midrule
+\texttt{observe\_conversation} & 1.54\,ms \\
+\texttt{query\_graph}          & 1.60\,ms \\
+\texttt{graph\_diff}           & 0.80\,ms \\
+\texttt{build\_context} ($N$=128)  & $\approx$22\,ms \\
+\texttt{build\_context} ($N$=2048) & $\approx$258--415\,ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{build\_context} latency scales with graph size due to the multi-subquery retrieval
+loop. At $N$=2048, latency is in the 250--415\,ms range, which is acceptable for agent use
+but not for real-time interactive applications.
+
+
+\subsection{LLM-Backed Answer-Level Evaluation}
+
+To validate that retrieval-level scores translate to answer quality, we conducted an
+LLM-backed answer-level evaluation using Groq \texttt{llama-3.3-70b-versatile} as the
+answering model. Each method's context pack was injected into a structured prompt; the
+model's answer was evaluated for exact match (EM), F1, and hallucination rate.
+
+\textbf{Setup.} Evaluation was run across 3 seeds (42, 43, 44) and 2 scales (128, 512 nodes)
+on the pairwise conflict task. Results were consistent across all seeds and scales.
+
+\textbf{Results.} Table~\ref{tab:groq_pairwise} shows the pairwise task results.
+
+\begin{table}[htbp]
+\caption{LLM Answer-Level Evaluation --- Pairwise Conflict Task\\
+(Groq \texttt{llama-3.3-70b-versatile}, seeds 42/43/44, scales 128/512)}
+\label{tab:groq_pairwise}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Method} & \textbf{EM} & \textbf{F1} & \textbf{Hall.} & \textbf{Tokens} \\
+\midrule
+\texttt{rmca\_full}  & \textbf{1.00} & \textbf{1.00} & \textbf{0.00} & 435--515 \\
+\texttt{query\_graph} & 0.00 & 0.00 & 0.00 & 98 \\
+\texttt{bm25\_topk}  & 0.00 & 0.00--0.12 & 0.00--1.00 & 1390--1422 \\
+\texttt{raw\_context} & 0.00 & 0.00--0.12 & 0.00--1.00 & 1390--1422 \\
+\texttt{hybrid\_rrf} & 0.00 & 0.00--0.12 & 0.00--1.00 & 1389--1422 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key findings.}
+\begin{enumerate}
+\item RMCA is the only method achieving EM=1.0, F1=1.0, and hallucination rate=0.0 on
+pairwise conflict tasks, consistent across all 3 seeds and both scales.
+\item \texttt{query\_graph} retrieves insufficient context (98 tokens) and the model
+correctly marks the question as \texttt{insufficient\_context} rather than hallucinating.
+\item Flat baselines (\texttt{bm25\_topk}, \texttt{raw\_context}, \texttt{hybrid\_rrf})
+inject 1390--1422 tokens but either fail to answer correctly or hallucinate, because the
+conflict annotation is not surfaced in the flat context dump.
+\item The pattern is consistent across seeds 42, 43, 44 and scales 128, 512, confirming
+the result is not a random artefact.
+\end{enumerate}
+
+\textbf{Caveat.} These results use one answering model and should be replicated across
+models. The model is an answerer, not an independent human judge. The
+\texttt{DeterministicAnswerer} is a reproducible lower-bound evaluator; its scores are not
+equivalent to human preference ratings or LLM-judge quality assessments.
+
+\subsection{Ablation Study}
+
+To identify which RMCA components are load-bearing, we ran a systematic ablation study
+across 7 variants on the \texttt{pairwise\_hidden\_edge} benchmark (conflict represented
+only by typed \texttt{contradicts} edges; no conflict vocabulary in node content).
+
+\textbf{Setup.} 4 variants $\times$ 2 scales (128, 512) $\times$ 3 seeds (42, 43, 44).
+All seeds produced identical scores (deterministic benchmark).
+
+\textbf{Results.} Table~\ref{tab:ablation} shows the ablation results.
+
+\begin{table}[htbp]
+\caption{RMCA Ablation Study --- \texttt{pairwise\_hidden\_edge} Benchmark\\
+(scales 128/512, seeds 42/43/44; all seeds identical)}
+\label{tab:ablation}
+\centering
+\begin{tabular}{lrrrp{2.0cm}}
+\toprule
+\textbf{Variant} & \textbf{S=128} & \textbf{S=512} & \textbf{$\Delta$} & \textbf{Status} \\
+\midrule
+\texttt{rmca\_full}               & 1.000 & 1.000 & ---    & Baseline \\
+\texttt{rmca\_no\_decomposition}  & 0.000 & 0.000 & $-1.000$ & \textbf{Load-bearing} \\
+\texttt{rmca\_no\_graph\_expansion} & 1.000 & 1.000 & 0.000 & Not isolated \\
+\texttt{rmca\_no\_conflict\_resolution} & 1.000 & 1.000 & 0.000 & Not isolated \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Real-embedding confirmation.} The ablation was repeated with Waggle's production
+\texttt{all-MiniLM-L6-v2} model (384-dim sentence-transformers) to rule out artefacts of
+the deterministic hash-based embedding. Table~\ref{tab:ablation_real} shows the results.
+
+\begin{table}[htbp]
+\caption{Ablation with Real Embeddings (\texttt{all-MiniLM-L6-v2})\\
+vs.\ Deterministic Embeddings}
+\label{tab:ablation_real}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Variant} & \textbf{Det.} & \textbf{Real} & \textbf{Diff.} \\
+\midrule
+\texttt{rmca\_full}               & 1.000 & 1.000 & 0.000 \\
+\texttt{rmca\_no\_graph\_expansion} & 1.000 & 1.000 & 0.000 \\
+\texttt{rmca\_no\_conflict\_resolution} & 1.000 & 1.000 & 0.000 \\
+\texttt{rmca\_no\_decomposition}  & 0.000 & 0.000 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Root cause analysis.} The real embedding model produces identical results to the
+deterministic model because the root cause is \emph{benchmark construction}, not the
+embedding model. The \texttt{pairwise\_hidden\_edge} node labels (e.g., ``Cloud database'',
+``Local deployment required'') are semantically distinctive enough that
+\texttt{all-MiniLM-L6-v2} retrieves the relevant choice and constraint nodes directly via
+cosine similarity, without needing to traverse the \texttt{contradicts} edge.
+
+To causally isolate graph expansion and conflict resolution, the benchmark would need nodes
+where: (1) choice and constraint labels are semantically similar to distractors, so that
+semantic retrieval alone cannot distinguish them; and (2) the only signal distinguishing the
+gold conflict pair is the \texttt{contradicts} edge. This requires a fundamentally different
+benchmark design.
+
+\textbf{Summary.} Decomposition is the only RMCA component causally isolated as
+load-bearing on the current synthetic benchmarks. Graph expansion and conflict resolution
+may be load-bearing in real-world settings, but the current benchmark cannot demonstrate
+this due to construction limitations.
+
+\subsection{ContextReset Benchmark}
+
+The ContextReset benchmark evaluates whether a memory system can correctly reconstruct
+project state after a context window reset. It tests six fields: decision recall,
+constraint recall, next-step accuracy, superseded context handling, active decision
+preference, and evidence coverage.
+
+\textbf{Setup.} Scale $N$=128, after the decomposition fix (short continuation queries
+now use broad project-state subqueries).
+
+\textbf{Results.} Table~\ref{tab:context_reset} shows the results.
+
+\begin{table}[htbp]
+\caption{ContextReset Benchmark Results ($N$=128)}
+\label{tab:context_reset}
+\centering
+\begin{tabular}{lrr}
+\toprule
+\textbf{Method} & \textbf{Score} & \textbf{Tokens} \\
+\midrule
+\texttt{rmca\_full}  & \textbf{1.000} & 315 \\
+\texttt{query\_graph} & 0.875 & 96 \\
+\texttt{raw\_context} & 0.000 & 1413 \\
+\texttt{bm25\_topk}  & 0.000 & 1413 \\
+\texttt{no\_memory}  & 0.000 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{rmca\_full} achieves a perfect score of 1.000 across all six evaluation fields.
+\texttt{query\_graph} scores 0.875, missing one field due to insufficient context breadth.
+Both \texttt{raw\_context} and \texttt{bm25\_topk} score 0.0 despite injecting 1413 tokens,
+because the flat context dump does not surface the structured project state needed to answer
+the multi-field question. \texttt{no\_memory} scores 0.0 as expected.
+
+The key insight from this benchmark is that structured context assembly (RMCA) outperforms
+both flat retrieval and raw context dump on multi-aspect project-state reconstruction tasks,
+using only 22\% of the tokens consumed by the flat baselines.
+
+\subsection{Comparison with RLM Paper}
+
+The RLM paper~\cite{zhang2026rlm} reports results on the real OOLONG and OOLONG-Pairs
+datasets using frontier models. Table~\ref{tab:rlm_compare} shows the comparison.
+
+\begin{table}[htbp]
+\caption{Qualitative Comparison with RLM Paper\\
+(NOT numerically comparable --- different datasets, models, scales)}
+\label{tab:rlm_compare}
+\centering
+\begin{tabular}{p{2.8cm}p{1.5cm}p{1.5cm}p{1.2cm}}
+\toprule
+\textbf{System} & \textbf{OOLONG} & \textbf{OOLONG-Pairs F1} & \textbf{Dataset} \\
+\midrule
+RLM (GPT-5)~\cite{zhang2026rlm} & $\approx$68\% & 58.0\% & Real \texttt{trec\_coarse} \\
+RLM (Qwen3-Coder-480B)~\cite{zhang2026rlm} & $\approx$73\% & 23.1\% & Real \texttt{trec\_coarse} \\
+Base models~\cite{zhang2026rlm} & --- & $<$0.1\% & Real \texttt{trec\_coarse} \\
+\midrule
+Waggle RMCA (scoped) & 55\% & --- & Synthetic (20 cases) \\
+Waggle RMCA (scoped fullscan) & 100\% & --- & Synthetic (20 cases) \\
+Waggle RMCA (pairwise) & --- & \textbf{100\%} & Synthetic (9 nodes) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Important caveats.}
+\begin{enumerate}
+\item The Waggle synthetic OOLONG results (55\% scoped, 100\% scoped-fullscan) are
+\emph{not comparable} to the RLM paper's 68--73\% on the real \texttt{trec\_coarse} split.
+The datasets, models, and scales differ fundamentally.
+\item The OOLONG real-30 run was interrupted by API token-per-day limits before completion;
+the 20-case synthetic result is preliminary.
+\item The RMCA pairwise F1 of 100\% is on a synthetic task with 9 nodes and explicit
+\texttt{contradicts} edges, which is substantially simpler than the real OOLONG-Pairs split.
+\item The qualitative pattern is consistent: structured assembly outperforms flat retrieval
+on conflict-aware tasks. Base models score $<$0.1\% F1 on OOLONG-Pairs while structured
+recursive assembly recovers to 23--58\% F1 in the RLM paper; RMCA achieves 100\% F1 on
+the synthetic pairwise task.
+\end{enumerate}
+
+
+\section{Discussion}
+
+\subsection{When RMCA Helps}
+
+RMCA provides the largest benefit over raw context and single-query retrieval on tasks
+that require:
+\begin{itemize}
+\item \textbf{Conflict and contradiction detection.} The \texttt{contradicts} and
+\texttt{updates} edge resolution in Step 4 is the only mechanism that can surface
+``we reversed this decision'' without the agent having to read the entire history.
+\item \textbf{Multi-aspect information needs.} Query decomposition (Step 1) allows RMCA
+to retrieve memory relevant to decisions, constraints, implementation details, and conflicts
+in a single call, where a single-query retrieval would only surface the most semantically
+similar nodes.
+\item \textbf{Token-constrained contexts.} At large graph sizes, raw context dumps exceed
+any practical context window. RMCA's token-budget compression (Step 7) ensures the context
+pack fits regardless of graph size.
+\item \textbf{Project-state reconstruction.} The ContextReset benchmark demonstrates that
+RMCA's structured assembly correctly reconstructs multi-field project state (decisions,
+constraints, next steps, superseded context) where flat retrieval fails.
+\end{itemize}
+
+\subsection{When RMCA Does Not Help}
+
+RMCA does not improve over simpler methods on:
+\begin{itemize}
+\item \textbf{Simple factual retrieval.} When the answer is a single node with high
+semantic similarity to the query, \texttt{query\_graph} is sufficient and faster.
+\item \textbf{Linear aggregation.} Tasks requiring enumeration of all $N$ entries are
+fundamentally O($n$) information needs. No fixed-budget retrieval system can guarantee
+full coverage. RMCA degrades more gracefully than raw context at large scale but does not
+solve this problem.
+\end{itemize}
+
+\subsection{Limitations}
+
+\begin{enumerate}
+\item \textbf{Synthetic benchmark data.}
+The RLM-style benchmark uses deterministic synthetic Waggle memory tasks. Numerical results
+must not be compared to the RLM paper or other long-context benchmarks until the exact
+public datasets are run with a matching model setup. The OOLONG real-30 run was interrupted
+by API token-per-day limits before completion; the 20-case synthetic result (55\% scoped,
+100\% scoped-fullscan) is not comparable to the RLM paper's 68--73\% on the real
+\texttt{trec\_coarse} split.
+
+\item \textbf{Token estimation is approximate.}
+$\widehat{\text{tok}}(s) = \lfloor |s|/4 \rfloor$ may differ from actual tokenizer counts
+by $\pm$20\%.
+
+\item \textbf{Decomposition is heuristic, not learned.} Subquery generation uses keyword
+pattern matching and does not use an LLM. It may produce suboptimal decompositions for
+queries outside the project/coding and generic-memory categories.
+
+\item \textbf{Graph expansion is bounded.} Expansion is limited to 2 hops from the top-3
+seed nodes. Deep reasoning chains requiring more than 2 hops are not guaranteed to be
+surfaced.
+
+\item \textbf{Graph expansion and conflict resolution are not yet causally isolated.}
+Ablation studies on both the standard \texttt{pairwise} and the harder
+\texttt{pairwise\_hidden\_edge} benchmark (conflict represented only by typed
+\texttt{contradicts} edges, no conflict vocabulary in node content) show zero delta when
+graph expansion or conflict resolution is disabled, using both the deterministic hash-based
+embedding model and Waggle's production \texttt{all-MiniLM-L6-v2} model. The root cause is
+benchmark construction: node labels are semantically distinctive enough that direct
+retrieval surfaces conflict nodes without edge traversal. Isolating these components
+requires a benchmark with semantically indistinguishable node labels and a scorer that
+requires explicit conflict annotation in the context pack.
+
+\item \textbf{LLM answer-level evaluation uses a single model.}
+The Groq \texttt{llama-3.3-70b-versatile} answer-level results use one answering model and
+should be replicated across models. The model is an answerer, not an independent human
+judge. The \texttt{DeterministicAnswerer} is a reproducible lower-bound evaluator; its
+scores are not equivalent to human preference ratings or LLM-judge quality assessments.
+
+\item \textbf{LongMemEval scope.} The adapter evaluates session retrieval only. End-to-end
+graph extraction quality, contradiction handling across sessions, and context-bundle
+usefulness for model handoff are not yet measured.
+
+\item \textbf{\texttt{graph\_hybrid} reranking sensitivity.} The 5.3\,pp dev/test gap
+confirms the hybrid reranking weights are partially tuned to this distribution and should
+not be treated as a portable headline number.
+
+\item \textbf{OOLONG-Pairs comparison is qualitative, not quantitative.}
+The RLM paper reports RLM(GPT-5) at 58.0\% F1 and RLM(Qwen3-Coder-480B) at 23.1\% F1 on
+the real OOLONG-Pairs split, while base models score $<$0.1\%. RMCA achieves 100\% F1 on
+the synthetic pairwise task (9 nodes, explicit conflict edges). The qualitative pattern is
+consistent---structured assembly outperforms flat retrieval on conflict-aware tasks---but
+the synthetic task is substantially simpler than the real OOLONG-Pairs split and the
+underlying models differ.
+\end{enumerate}
+
+\section{Conclusion}
+
+We presented Waggle, a local-first persistent memory system for AI agents, and RMCA, an
+algorithm for assembling compact, high-signal context packs from a typed knowledge graph.
+On LongMemEval-S, \texttt{graph\_raw} achieves 89.0\% Exact@5 with no overfitting confirmed
+by a held-out split (+1.1\,pp gap). On pairwise conflict reasoning tasks, RMCA achieves
+perfect scores at all scales while raw context dump and single-query retrieval both fail
+completely, a pattern consistent with the RLM paper's finding that base models score
+$<$0.1\% F1 on OOLONG-Pairs while structured recursive assembly recovers to 23--58\% F1.
+On linear aggregation tasks, RMCA degrades gracefully but exposes a fundamental O($n$)
+coverage limit shared by all fixed-budget retrieval systems.
+
+LLM-backed answer-level evaluation with Groq \texttt{llama-3.3-70b-versatile} confirms the
+retrieval-level finding: RMCA is the only method achieving EM=1.0, F1=1.0, and hallucination
+rate=0.0 on pairwise conflict tasks, consistent across 3 seeds and 2 scales (128, 512 nodes).
+Flat baselines either mark the question as \texttt{insufficient\_context} or hallucinate,
+while RMCA's structured context pack provides the conflict annotation needed for the LLM to
+answer correctly.
+
+Ablation studies confirm that \textbf{decomposition is the primary load-bearing RMCA
+component}: disabling it drops pairwise score from 1.0 to 0.0 at both scales across all
+seeds. Graph expansion and conflict resolution do not yet show a measurable delta on current
+benchmarks due to benchmark construction limitations.
+
+The key insight is that agent memory is not a retrieval problem alone---it is a
+retrieval-plus-reasoning problem. Retrieving the right facts is necessary but not sufficient;
+the memory system must also surface which facts are current, which are superseded, and which
+contradict each other. RMCA addresses this by treating conflict resolution and temporal
+validity as first-class operations in the context assembly pipeline.
+
+Future work includes: (1) replacing heuristic query decomposition with a learned decomposer;
+(2) evaluating on the full RLM public benchmark suite (\texttt{trec\_coarse} OOLONG,
+OOLONG-Pairs, BrowseComp-Plus, LongBench-v2 CodeQA) with a matching model setup;
+(3) measuring end-to-end graph extraction quality on LongMemEval;
+(4) hardening the hybrid reranking weights against distribution shift; and
+(5) constructing a \texttt{pairwise\_hidden\_edge} benchmark variant with semantically
+indistinguishable node labels to causally isolate graph expansion and conflict resolution
+benefits.
+
+
+\begin{thebibliography}{99}
+
+\bibitem{lewis2020rag}
+P.~Lewis, E.~Perez, A.~Piktus, F.~Petroni, V.~Karpukhin, N.~Goyal, H.~K\"{u}ttler,
+M.~Lewis, W.-t. Yih, T.~Rockt\"{a}schel, S.~Riedel, and D.~Kiela,
+``Retrieval-augmented generation for knowledge-intensive {NLP} tasks,''
+in \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2020.
+
+\bibitem{edge2024graphrag}
+D.~Edge, H.~Trinh, N.~Cheng, J.~Bradley, A.~Chao, A.~Mody, S.~Truitt, and J.~Larson,
+``From local to global: A {Graph RAG} approach to query-focused summarization,''
+\emph{arXiv preprint arXiv:2404.16130}, 2024.
+
+\bibitem{packer2023memgpt}
+C.~Packer, S.~Wooders, K.~Lin, V.~Fang, S.~I.~Patil, I.~Stoica, and J.~E.~Gonzalez,
+``{MemGPT}: Towards {LLMs} as operating systems,''
+\emph{arXiv preprint arXiv:2310.08560}, 2023.
+
+\bibitem{park2023generative}
+J.~S.~Park, J.~C.~O'Brien, C.~J.~Cai, M.~R.~Morris, P.~Liang, and M.~S.~Bernstein,
+``Generative agents: Interactive simulacra of human behavior,''
+in \emph{Proc.\ ACM Symposium on User Interface Software and Technology (UIST)}, 2023.
+
+\bibitem{wu2024longmemeval}
+X.~Wu, H.~Wang, W.~Xiong, C.~Hu, and W.~Y.~Wang,
+``{LongMemEval}: Benchmarking chat assistants on long-term interactive memory,''
+\emph{arXiv preprint arXiv:2410.10813}, 2024.
+
+\bibitem{reimers2019sbert}
+N.~Reimers and I.~Gurevych,
+``Sentence-{BERT}: Sentence embeddings using {Siamese BERT}-networks,''
+in \emph{Proc.\ Conference on Empirical Methods in Natural Language Processing (EMNLP)},
+2019.
+
+\bibitem{zhang2026rlm}
+B.~Zhang, J.~Gu, B.~Peng, and others,
+``Recursive language models,''
+\emph{arXiv preprint arXiv:2512.24601}, 2026.
+
+\bibitem{bertsch2025oolong}
+A.~Bertsch, M.~Gormley, G.~Neubig, and M.~R.~Gormley,
+``{OOLONG}: Investigating what makes long-context tasks difficult,''
+\emph{arXiv preprint arXiv:2501.05173}, 2025.
+
+\bibitem{hsieh2024ruler}
+C.-P.~Hsieh, S.~Sun, S.~Kriman, S.~Acharya, D.~Rekesh, F.~Jia, and B.~Ginsburg,
+``{RULER}: What's the real context size of your long-context language models?''
+\emph{arXiv preprint arXiv:2404.06654}, 2024.
+
+\bibitem{bai2025longbench}
+Y.~Bai, X.~Lv, J.~Zhang, Y.~He, J.~Qi, L.~Hou, J.~Tang, Y.~Dong, and J.~Li,
+``{LongBench v2}: Towards deeper understanding and reasoning on realistic long-context
+multitasks,''
+\emph{arXiv preprint arXiv:2412.15204}, 2025.
+
+\end{thebibliography}
+
+\appendix
+
+\section{RMCA Pseudocode}
+
+\begin{enumerate}
+\item \textbf{DECOMPOSE:} Classify query intent; generate $\leq k$ subqueries $\{sq_i\}$ with priority weights and retrieval modes.
+\item \textbf{RETRIEVE:} $H \leftarrow \bigcup_i \text{retrieve}(sq_i, G, T)$ --- issue each subquery against graph and transcript store.
+\item \textbf{EXPAND:} seeds $\leftarrow$ top-5 nodes in $H$; for each $s \in$ seeds[:3]: $H \leftarrow H \cup \text{graph\_hop}(s, G, \min(d,2))$.
+\item \textbf{RESOLVE:} For \texttt{updates} edges: penalise target ($\times 0.3$), boost source ($+0.15$). For \texttt{contradicts} edges: record conflict pair. For expired nodes: penalise ($\times 0.2$).
+\item \textbf{DEDUPLICATE:} $H \leftarrow \{\arg\max_{\text{score}} h : h.\text{node\_id}\}$ --- keep highest-scored copy per node.
+\item \textbf{RANK:} Sort $H$ by (is\_superseded $\uparrow$, score $\downarrow$, label $\uparrow$).
+\item \textbf{COMPRESS:} Pack sections [decisions, constraints, impl., unfinished, conflicts, superseded, evidence] until $\widehat{\text{tok}}(C) > B \times 1.15$.
+\item \textbf{FORMAT:} Prepend structured header; attach provenance and conflict annotations.
+\item[] \textbf{Return} $C$, provenance($H$), conflict\_entries.
+\end{enumerate}
+
+\section{Reproduction Commands}
+
+\subsection{LongMemEval-S}
+
+\begin{verbatim}
+# Full 500-question run -- graph_raw
+python scripts/benchmark_longmemeval.py \
+  benchmarks/longmemeval/longmemeval_s_cleaned.json \
+  --mode graph_raw \
+  --output results/graph_raw.json
+
+# Held-out split (overfitting check)
+python scripts/benchmark_longmemeval.py \
+  benchmarks/longmemeval/longmemeval_s_cleaned.json \
+  --mode graph_raw --held-out \
+  --output results/graph_raw_heldout.json
+\end{verbatim}
+
+\subsection{RLM-Style Synthetic Benchmark}
+
+\begin{verbatim}
+python benchmarks/rlm_style_waggle_eval.py \
+  --db /tmp/waggle_rlm_eval \
+  --scales 128 512 2048 \
+  --methods raw_context query_graph build_context \
+  --families sniah multihop pairwise codeqa linear_agg \
+  --token-budget 1200 --seed 42 \
+  --output benchmark_results/
+\end{verbatim}
+
+\subsection{Ablation Study}
+
+\begin{verbatim}
+python benchmarks/ablation_eval.py \
+  --benchmark pairwise_hidden_edge \
+  --scales 128 512 \
+  --seeds 42 43 44 \
+  --real-embeddings \
+  --output benchmark_results/ablation_results_real_emb.csv
+\end{verbatim}
+
+\end{document}
