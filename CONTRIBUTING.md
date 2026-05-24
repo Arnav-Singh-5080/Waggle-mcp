@@ -43,12 +43,27 @@ If you are new to the repo, start here before picking an issue:
 - [`docs/good-first-issues.md`](./docs/good-first-issues.md) lists intentionally scoped starter tasks.
 - [`.github/labels.yml`](./.github/labels.yml) defines the label set maintainers should use for triage.
 
+### Before you edit code
+
+Read the matching section in [`docs/repository-map.md`](./docs/repository-map.md) first. That doc now tells you:
+
+- which files implement each feature
+- which files are usually safe for newcomers
+- which files have a high blast radius
+- which files should generally not be touched unless your issue is specifically there
+
+If you skip that step, the most common failure mode is editing an integration file when the real fix belongs in a lower-level module or in docs/tests.
+
+The same document also defines the root layout policy. As a rule, do not add new top-level files unless packaging, deployment tooling, or an external registry requires that exact root path.
+
 ### Labeling guidance
 
 - Use `good first issue` for small, well-scoped tasks with clear acceptance criteria.
 - Use `help wanted` for larger tasks that are still open to external contributors.
 - Add one domain label where possible, such as `graph`, `retrieval`, `windows`, `tooling`, or `documentation`.
 - New issues should usually start as `needs-triage` until a maintainer confirms scope and priority.
+
+Repository labels are defined in [`.github/labels.yml`](./.github/labels.yml) and synced with [`scripts/sync_github_labels.py`](./scripts/sync_github_labels.py). Use `--dry-run` first before changing live labels.
 
 ---
 
@@ -99,6 +114,20 @@ Every node and transcript record carries three scope fields:
 | `session_id` | Per-conversation identifier | `"thread-abc123"` |
 
 Always pass a stable `project` value for the same codebase across sessions — fragmenting scope by accident is the most common source of poor recall.
+
+### High-blast-radius files
+
+Be extra careful with these files because they affect multiple features at once:
+
+- `src/waggle/server.py`
+- `src/waggle/orchestrator.py`
+- `src/waggle/chat_runtime.py`
+- `src/waggle/graph.py`
+- `src/waggle/models.py`
+- `src/waggle/recursive_context.py`
+- `src/waggle/runtime_context.py`
+
+If your issue does not clearly require one of these files, look for a narrower place to make the change first.
 
 ---
 

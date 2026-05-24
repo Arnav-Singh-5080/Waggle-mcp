@@ -12,6 +12,11 @@ These are candidate issues that would make the repository easier to contribute t
   - Document how maintainers should use it.
 - Suggested labels: `good first issue`, `tooling`, `onboarding`
 
+Status:
+- Implemented by `scripts/sync_github_labels.py` and `.github/workflows/sync-labels.yml`
+- Maintainers can run it locally with `python3 scripts/sync_github_labels.py --dry-run`
+- The workflow also runs on pushes to `main` that change the label catalog or sync script
+
 ## 2. Add a `doctor --json` mode
 
 - Problem: `waggle-mcp doctor` is useful for humans, but automation and issue templates benefit from structured output.

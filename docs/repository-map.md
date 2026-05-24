@@ -1,113 +1,408 @@
 # Repository Map
 
-This guide explains the important files and directories in the public Waggle repository so new contributors can find the right place to work.
+This document is for contributors, not end users. Its job is to answer four questions quickly:
 
-## Top-level files
+1. Which files implement each Waggle feature?
+2. Which files are safe for a newcomer to edit?
+3. Which files have a large blast radius and should be touched carefully?
+4. If you change one area, which tests and docs should move with it?
 
-| Path | Purpose |
-| --- | --- |
-| `README.md` | Product overview, install paths, quick start, and high-level architecture. |
-| `CONTRIBUTING.md` | Development setup, test commands, code style, and PR expectations. |
-| `SECURITY.md` | Security reporting policy and repo-specific security notes. |
-| `pyproject.toml` | Python package metadata, dependencies, CLI entrypoints, and tool config for Ruff and mypy. |
-| `smithery.yaml` | Metadata for MCP ecosystem distribution and discovery. |
-| `Dockerfile` | Container image build for the packaged Waggle server. |
-| `LICENSE` | Apache-2.0 license for the public repo. |
+## Read this first
 
-## Main source tree
+If you are opening the repo for the first time, do not start by skimming random files.
 
-### `src/waggle/`
+- Start with `README.md` for product scope.
+- Then read `CONTRIBUTING.md` for setup and test commands.
+- Then use the feature map below to jump directly to the subsystem you want.
 
-This is the product code for the MCP server and memory engine.
+## Root layout policy
 
-| File | Purpose |
-| --- | --- |
-| `server.py` | Main CLI and MCP tool surface. This is the first file to read if you want to understand what Waggle exposes. |
-| `graph.py` | SQLite-backed graph storage and traversal engine. |
-| `neo4j_graph.py` | Neo4j-backed graph implementation for deployments that need a remote graph backend. |
-| `models.py` | Shared models for nodes, edges, transcripts, and API payloads. |
-| `config.py` | Environment-driven application config and startup modes. |
-| `embeddings.py` | Local embedding model integration plus deterministic fallback mode. |
-| `intelligence.py` | Heuristics for extracting candidate memories, labels, and relationships from conversation text. |
-| `recursive_context.py` | Recursive context assembly and token-budgeted context pack generation. |
-| `orchestrator.py` | Automatic memory orchestration hooks that build context before an answer and ingest after a turn. |
-| `chat_runtime.py` | Runtime wiring for session handling and orchestrated turns. |
-| `abhi.py` | Import/export, validation, diff, and merge support for `.abhi` memory snapshots. |
-| `serializer.py` | Serialization helpers for graph data and interchange formats. |
-| `runtime_context.py` | Scope and runtime metadata helpers used during memory operations. |
-| `context_bundle.py` | Context packaging helpers for returning concise memory payloads. |
-| `auth.py` | Authentication helpers for hosted or protected setups. |
-| `drive_sync.py` | Google Drive sync and token handling for export/import workflows. |
-| `graph_ui.py` | Graph Studio serving and UI integration entrypoints. |
-| `markdown_vault.py` | Markdown-based export and vault helpers. |
-| `backfill.py` | Backfill/import workflows for existing data sources. |
-| `evidence.py` | Evidence tracking for why a memory exists and where it came from. |
-| `errors.py` | Shared exception types. |
-| `locks.py` | File and process locking helpers to protect local state. |
-| `logging_utils.py` | Logging setup and formatting helpers. |
-| `metrics.py` | Internal counters and performance-oriented metrics helpers. |
-| `rate_limit.py` | Safeguards for request pacing or repeated operations. |
-| `rlm.py` | Integration layer for the RLM-inspired recursive context behavior. |
-| `token_efficiency_benchmark.py` | Benchmark helpers for context-pack size and efficiency analysis. |
-| `__init__.py` | Package version and top-level exports. |
+The repo root is intentionally small. If a file does not need to be discovered by packaging tools, container tooling, or external MCP registries, it should usually not live at the root.
 
-### `src/waggle/retrieval/`
+Expected root-level categories:
 
-Retrieval strategies and ranking logic. Start with `hybrid.py` if you want to work on search quality.
+- project entrypoints and metadata: `README.md`, `pyproject.toml`, `MANIFEST.in`, `LICENSE`
+- contributor/community docs: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `SUPPORT.md`, `CHANGELOG.md`, `AGENTS.md`
+- deployment entrypoints: `Dockerfile`, `docker-compose.yml`, `docker-compose.prod.yml`, `render.yaml`
+- registry/distribution manifests that external services expect at the root: `smithery.yaml`, `server.json`, `glama.json`, `llms-install.txt`
 
-### `src/waggle/hooks/claude_code/`
+Everything else should usually live under one of these folders:
 
-Hook scripts used by Claude Code integrations. These are the main files to inspect when debugging automatic memory behavior in that client.
+- `docs/` for narrative documentation
+- `examples/` for user-facing examples and sample configs
+- `scripts/` for operational, benchmark, and one-off utilities
+- `deploy/` for deployment-specific assets beyond root entrypoints
+- `tests/` for verification and regression coverage
 
-### `src/rlm/`
+If you add a new top-level file, assume it is in the wrong place until you can justify why a tool outside the repo needs it at the root.
 
-Vendored or adapted Recursive Language Model support code used by Waggle's context assembly pipeline. Treat this subtree carefully and keep changes tightly scoped.
+## Quick safety guide
 
-## Tests
+### Usually safe for first contributions
 
-| Path | Purpose |
-| --- | --- |
-| `tests/` | Main Python test suite for graph behavior, orchestration, hooks, packaging, and CLI flows. |
-| `tests/fixtures/` | Fixture data for import/export, retrieval, and regression coverage. |
+- `docs/**`
+- `tests/**`
+- `src/waggle/retrieval/hybrid.py`
+- `src/waggle/graph.py`
+- `src/waggle/intelligence.py`
+- `src/waggle/config.py`
+- `src/waggle/logging_utils.py`
+- `src/waggle/errors.py`
 
-If you are making a focused change, search for the corresponding `tests/test_*.py` file before adding new coverage from scratch.
+These are still important files, but they are relatively easy to reason about if you stay within one feature and update tests.
 
-## Documentation
+### Touch carefully
 
-| Path | Purpose |
-| --- | --- |
-| `docs/install/` | Client-specific installation guides for Codex, Claude, Cursor, VS Code, and other MCP clients. |
-| `docs/security/` | Security model and hardening guidance. |
-| `docs/deployment/` | Production and deployment-facing material. |
-| `docs/reference.md` | Command, configuration, and behavior reference. |
-| `docs/memory-orchestration.md` | How automatic memory is wired through runtime orchestration. |
-| `docs/hooks.md` | Hook behavior and integration details. |
-| `docs/automatic-memory-rules.md` | The policy text that instructs clients to use automatic memory tools. |
+- `src/waggle/server.py`
+- `src/waggle/orchestrator.py`
+- `src/waggle/chat_runtime.py`
+- `src/waggle/recursive_context.py`
+- `src/waggle/models.py`
+- `src/waggle/serializer.py`
+- `src/waggle/runtime_context.py`
+- `src/waggle/neo4j_graph.py`
 
-## Packages and integrations
+These files sit on major code paths. A small change here can break multiple tools, clients, or test suites.
 
-| Path | Purpose |
-| --- | --- |
-| `packages/vscode-extension/` | VS Code extension that installs and manages Waggle for workspace users. |
-| `packages/claude-desktop-extension/` | Claude Desktop extension packaging and bundle metadata. |
-| `graph-ui/` | Frontend code for Graph Studio and related UI assets. |
-| `templates/waggle-plus/` | Template material for packaged or commercial-facing setups. |
+### Avoid unless your issue is specifically about them
 
-## Scripts and support assets
+- `src/rlm/**`
+- `packages/vscode-extension/package-lock.json`
+- `graph-ui/node_modules/**`
+- generated build outputs such as `.vsix`, packaged bundles, local exports, and transient debug artifacts
 
-| Path | Purpose |
-| --- | --- |
-| `scripts/oolong/` | Evaluation and dataset helpers that were moved out of the repo root for cleanliness. |
-| `scripts/verification/` | Verification and benchmark-related utility scripts. |
-| `assets/` | Images and static assets used by docs or packaging. |
-| `deploy/` | Kubernetes and observability deployment helpers. |
-| `examples/` | Example configuration and sample usage files. |
-| `third_party/` | Imported upstream material and attribution-preserving references. |
+Reasons:
 
-## Good places to start
+- `src/rlm/**` is vendored/adapted support code with a wider reasoning surface.
+- lockfiles and generated outputs create noisy diffs and are easy to change accidentally.
+- `node_modules` and transient artifacts should not be used as source-of-truth code.
 
-- Product behavior or tool surface: `src/waggle/server.py`
-- Memory correctness: `src/waggle/graph.py`, `src/waggle/orchestrator.py`, `tests/test_graph.py`
-- Retrieval quality: `src/waggle/retrieval/hybrid.py`, `src/waggle/recursive_context.py`
-- Contributor ergonomics: `README.md`, `CONTRIBUTING.md`, `docs/install/`
-- Extension work: `packages/vscode-extension/` or `packages/claude-desktop-extension/`
+## Feature map
+
+This is the main onboarding section. If you want to work on a feature, start with the files listed for that feature and the tests listed beside it.
+
+### 1. MCP server and CLI surface
+
+What this feature does:
+- Exposes Waggle as an MCP server
+- Registers tools and resources
+- Implements CLI commands like setup, doctor, and serve
+
+Primary files:
+- `src/waggle/server.py`
+- `src/waggle/config.py`
+- `src/waggle/__init__.py`
+- `pyproject.toml`
+
+Change here when:
+- You add or modify a tool
+- You change CLI flags or startup behavior
+- You change packaging metadata or command entrypoints
+
+Tests to read first:
+- `tests/test_server.py`
+- `tests/test_stdio_integration.py`
+- `tests/test_packaging_metadata.py`
+
+Blast radius:
+- High. Changes can affect every client integration.
+
+### 2. Graph storage and memory correctness
+
+What this feature does:
+- Stores nodes, edges, transcripts, and evidence
+- Handles traversal, updates, scoping, and validity windows
+- Powers the core persistent memory behavior
+
+Primary files:
+- `src/waggle/graph.py`
+- `src/waggle/models.py`
+- `src/waggle/evidence.py`
+- `src/waggle/locks.py`
+- `src/waggle/neo4j_graph.py`
+
+Change here when:
+- Query results are wrong
+- Contradictions, updates, or validity windows behave incorrectly
+- Storage or traversal performance needs improvement
+
+Tests to read first:
+- `tests/test_graph.py`
+- `tests/test_edges.py`
+- `tests/test_temporal_validity.py`
+- `tests/test_valid_to.py`
+- `tests/test_dedup.py`
+
+Blast radius:
+- High. This is the heart of the product.
+
+### 3. Retrieval quality
+
+What this feature does:
+- Finds relevant memory from graph, text, and hybrid search
+- Combines ranking signals
+- Controls whether context returned to the model is useful
+
+Primary files:
+- `src/waggle/retrieval/hybrid.py`
+- `src/waggle/embeddings.py`
+- `src/waggle/intelligence.py`
+- `src/waggle/token_efficiency_benchmark.py`
+
+Change here when:
+- Search results are low quality
+- Embedding fallback behavior is wrong
+- Ranking, recall, or token efficiency needs work
+
+Tests to read first:
+- `tests/test_hybrid_retrieval.py`
+- `tests/test_recursive_context.py`
+
+Blast radius:
+- Medium to high. Retrieval regressions are subtle and can look like “memory is bad” even when storage is correct.
+
+### 4. Recursive context assembly
+
+What this feature does:
+- Breaks a task into retrieval subqueries
+- Expands graph neighborhoods
+- Compresses results into a token-budgeted context pack
+
+Primary files:
+- `src/waggle/recursive_context.py`
+- `src/waggle/context_bundle.py`
+- `src/waggle/rlm.py`
+- `src/waggle/runtime_context.py`
+
+Change here when:
+- `build_context` returns noisy, incomplete, or badly ranked context
+- Token budgeting or packing format needs work
+
+Tests to read first:
+- `tests/test_recursive_context.py`
+- `tests/test_demo.py`
+
+Blast radius:
+- High. This area shapes the model-facing experience directly.
+
+### 5. Automatic memory orchestration
+
+What this feature does:
+- Retrieves context before an answer
+- Stores durable memory after a completed turn
+- Wires Waggle into conversational runtimes
+
+Primary files:
+- `src/waggle/orchestrator.py`
+- `src/waggle/chat_runtime.py`
+- `src/waggle/runtime_context.py`
+- `docs/automatic-memory-rules.md`
+- `docs/memory-orchestration.md`
+
+Change here when:
+- Memory is not being recalled automatically
+- Sessions fail to ingest completed turns
+- Scope or runtime state is inconsistent across clients
+
+Tests to read first:
+- `tests/test_chat_runtime.py`
+- `tests/test_observe_conversation_refactor.py`
+- `tests/test_ingest_transcript_handoff.py`
+
+Blast radius:
+- High. This is where “Waggle should remember automatically” either works or fails.
+
+### 6. Import, export, and `.abhi` workflows
+
+What this feature does:
+- Exports memory to portable snapshots
+- Imports and verifies snapshots
+- Supports diff and merge flows
+
+Primary files:
+- `src/waggle/abhi.py`
+- `src/waggle/serializer.py`
+- `src/waggle/markdown_vault.py`
+- `src/waggle/backfill.py`
+
+Change here when:
+- Export/import round-trips fail
+- Diff/merge behavior is incorrect
+- External memory transfer needs improvement
+
+Tests to read first:
+- `tests/test_abhi_diff_merge.py`
+- `tests/test_diff_merge_fixes.py`
+- `tests/test_export_import_v2.py`
+- `tests/test_backfill.py`
+
+Blast radius:
+- Medium to high. Bugs here can corrupt portability or trust in exported state.
+
+### 7. Hooks and client integrations
+
+What this feature does:
+- Installs or runs client-specific memory hooks
+- Integrates Waggle with Claude Code and related clients
+
+Primary files:
+- `src/waggle/hooks/claude_code/common.py`
+- `src/waggle/hooks/claude_code/pre_response.py`
+- `src/waggle/hooks/claude_code/post_response.py`
+- `src/waggle/hooks/claude_code/pre_compact.py`
+- `docs/hooks.md`
+- `docs/install/**`
+
+Change here when:
+- Client setup is broken
+- Hook ordering or payload handling is wrong
+- Memory behavior differs across supported clients
+
+Tests to read first:
+- `tests/test_hooks.py`
+- `tests/test_stdio_integration.py`
+
+Blast radius:
+- Medium to high. These files are integration-heavy and often fail at runtime rather than import-time.
+
+### 8. Graph Studio and UI-facing surfaces
+
+What this feature does:
+- Serves the graph UI and related assets
+- Powers the visual inspection/admin experience
+
+Primary files:
+- `src/waggle/graph_ui.py`
+- `graph-ui/**`
+- `assets/**`
+
+Change here when:
+- UI pages fail to load
+- Static assets are broken
+- The Graph Studio flow needs improvement
+
+Tests and checks:
+- Read `graph-ui/README.md`
+- If changing frontend code, verify the UI manually after the change
+
+Blast radius:
+- Medium. Usually isolated, but packaging and asset paths can leak into the server surface.
+
+### 9. Packaging and external distributions
+
+What this feature does:
+- Publishes the Python package
+- Builds the VS Code extension
+- Builds the Claude Desktop bundle
+- Produces release binaries and container images
+
+Primary files:
+- `pyproject.toml`
+- `.github/workflows/ci.yml`
+- `.github/workflows/publish-vscode-extension.yml`
+- `.github/workflows/package-claude-desktop-extension.yml`
+- `.github/workflows/release-binaries.yml`
+- `.github/workflows/publish-image.yml`
+- `packages/vscode-extension/**`
+- `packages/claude-desktop-extension/**`
+
+Change here when:
+- Release automation is broken
+- Package metadata is wrong
+- Extension packaging needs work
+
+Tests and checks:
+- `tests/test_packaging_metadata.py`
+- package-specific README files
+
+Blast radius:
+- High for release flows, lower for isolated docs or UI metadata.
+
+## File-by-file guide for `src/waggle/`
+
+Use this when you already know you are inside `src/waggle` and need a quick explanation of a specific file.
+
+| File | What it does | Touch risk |
+| --- | --- | --- |
+| `__init__.py` | Package version and top-level exports. | Medium |
+| `abhi.py` | Portable snapshot import/export, diff, merge. | Medium |
+| `auth.py` | Authentication helpers for protected deployments. | Medium |
+| `backfill.py` | Backfill/import logic for existing data. | Medium |
+| `chat_runtime.py` | Runtime turn handling and orchestration wiring. | High |
+| `config.py` | Environment-driven configuration loading. | Medium |
+| `context_bundle.py` | Structured context pack formatting. | Medium |
+| `drive_sync.py` | Google Drive sync and token file handling. | Medium |
+| `embeddings.py` | Embedding model loading and deterministic fallback. | Medium |
+| `errors.py` | Shared exceptions and error types. | Low |
+| `evidence.py` | Evidence record handling for memory provenance. | Medium |
+| `graph.py` | SQLite graph engine and traversal. | High |
+| `graph_ui.py` | Graph Studio server/UI integration entrypoints. | Medium |
+| `intelligence.py` | Candidate extraction and relationship heuristics. | Medium |
+| `locks.py` | Local state locking helpers. | Medium |
+| `logging_utils.py` | Logging config and formatting helpers. | Low |
+| `markdown_vault.py` | Markdown export/import helpers. | Medium |
+| `metrics.py` | Internal metrics and counters. | Low |
+| `models.py` | Shared core data models. | High |
+| `neo4j_graph.py` | Neo4j graph backend. | High |
+| `orchestrator.py` | Automatic memory retrieval/ingestion flow. | High |
+| `rate_limit.py` | Rate-limiting helpers. | Low |
+| `recursive_context.py` | Context assembly pipeline. | High |
+| `rlm.py` | RLM integration layer. | Medium |
+| `runtime_context.py` | Runtime scope and session metadata handling. | High |
+| `serializer.py` | Serialization and interchange logic. | High |
+| `server.py` | CLI entrypoints and MCP tool registration. | High |
+| `token_efficiency_benchmark.py` | Benchmark helpers for context efficiency. | Low |
+
+## Non-source paths contributors often ask about
+
+| Path | What it is | Contributor guidance |
+| --- | --- | --- |
+| `tests/fixtures/` | Fixture data for regression coverage. | Safe to extend, but do not rewrite existing fixtures casually. |
+| `third_party/rlm/` | Upstream reference material. | Prefer reading over editing. |
+| `examples/` | Example config and sample usage. | Safe for docs-oriented contributions. |
+| `deploy/` | Infra manifests and observability helpers. | Touch only if your issue is deployment-specific. |
+| `templates/waggle-plus/` | Template/package material. | Treat as distribution-facing. Keep changes intentional. |
+| `graph-ui/node_modules/` | Installed frontend dependencies. | Do not edit by hand. |
+
+## If you change X, also check Y
+
+- If you change `server.py`, also check `tests/test_server.py`, `tests/test_stdio_integration.py`, and `docs/reference.md`.
+- If you change `graph.py`, also check `tests/test_graph.py`, `tests/test_edges.py`, and temporal-validity tests.
+- If you change `orchestrator.py` or `chat_runtime.py`, also check `docs/automatic-memory-rules.md`, `docs/memory-orchestration.md`, and runtime tests.
+- If you change `.abhi` behavior, also check import/export tests and any docs that describe the format.
+- If you change install or hook behavior, also check `docs/install/**`, `docs/hooks.md`, and integration tests.
+- If you change release or packaging files, also check the package-specific README files and workflow YAMLs.
+
+## Common onboarding mistakes
+
+- Editing generated outputs instead of source files.
+- Making a broad change in `server.py` without reading the matching tests first.
+- Changing vendored `src/rlm/**` code for a problem that actually lives in `recursive_context.py`.
+- Updating behavior without updating the corresponding docs under `docs/install/`, `docs/reference.md`, or `docs/hooks.md`.
+- Treating `graph-ui/node_modules/**` as repository source.
+
+## Recommended first reads by goal
+
+- “I want to add or change an MCP tool”:
+  - `src/waggle/server.py`
+  - `tests/test_server.py`
+  - `docs/reference.md`
+
+- “I want to improve memory quality”:
+  - `src/waggle/graph.py`
+  - `src/waggle/retrieval/hybrid.py`
+  - `src/waggle/recursive_context.py`
+  - `tests/test_graph.py`
+  - `tests/test_hybrid_retrieval.py`
+
+- “I want to fix automatic memory not being used”:
+  - `src/waggle/orchestrator.py`
+  - `src/waggle/chat_runtime.py`
+  - `docs/automatic-memory-rules.md`
+  - `tests/test_chat_runtime.py`
+
+- “I want to help as a docs contributor”:
+  - `README.md`
+  - `CONTRIBUTING.md`
+  - `docs/install/`
+  - `docs/reference.md`

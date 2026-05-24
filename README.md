@@ -111,6 +111,17 @@ For self-hosted production review and security posture:
 - [Starter issues](./docs/good-first-issues.md)
 - [Label catalog](./.github/labels.yml)
 
+Contributor layout note:
+- The repo root is reserved for packaging, deployment entrypoints, and external registry manifests. Contributor-facing docs, examples, and utilities should live under `docs/`, `examples/`, `scripts/`, or `deploy/`.
+
+### Maintainer Tip
+
+Repository labels are synced from [`.github/labels.yml`](./.github/labels.yml). To preview changes locally:
+
+```bash
+python3 scripts/sync_github_labels.py --repository Abhigyan-Shekhar/Waggle-mcp --dry-run
+```
+
 ---
 
 ## 60-Second Demo
