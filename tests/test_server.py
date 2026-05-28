@@ -83,6 +83,24 @@ def make_app(tmp_path: Path) -> WaggleServer:
     return WaggleServer(graph=graph, config=config)
 
 
+def write_waggle_codex_config(home: Path, db_path: Path) -> None:
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True)
+    (codex_dir / "config.toml").write_text(
+        "\n".join(
+            [
+                "[mcp_servers.waggle]",
+                'command = "waggle-mcp"',
+                "",
+                "[mcp_servers.waggle.env]",
+                f'WAGGLE_DB_PATH = "{db_path}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_store_node_and_stats_tool(tmp_path: Path) -> None:
     app = make_app(tmp_path)
 
@@ -221,8 +239,12 @@ def test_parser_accepts_graph_editor_commands() -> None:
     assert share_args.file_ref == "file123"
 
 
-def test_doctor_flags_mixed_embedding_model_ids(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_doctor_flags_mixed_embedding_model_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     db_path = tmp_path / "server-memory.db"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_waggle_codex_config(tmp_path, db_path)
     graph = MemoryGraph(db_path, FakeEmbeddingModel())
     graph.observe_conversation(
         user_message="Use FastAPI.",
@@ -269,8 +291,12 @@ def test_doctor_flags_mixed_embedding_model_ids(tmp_path: Path, capsys: pytest.C
     assert "Mixed embedding model IDs detected" in stdout
 
 
-def test_doctor_fix_reembeds_mixed_embedding_model_ids(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_doctor_fix_reembeds_mixed_embedding_model_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     db_path = tmp_path / "server-memory.db"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_waggle_codex_config(tmp_path, db_path)
     graph = MemoryGraph(db_path, FakeEmbeddingModel())
     graph.observe_conversation(
         user_message="Use FastAPI.",
