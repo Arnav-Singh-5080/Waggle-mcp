@@ -3465,6 +3465,13 @@ def create_http_application(app_server: WaggleServer, config: AppConfig) -> Star
     async def graph_create_edge(request: Request) -> Response:
         payload = await request.json()
         graph, _ = _require_http_scope(request, "graph:write")
+        raw_weight = payload.get("weight", 1.0)
+        try:
+            weight_value = float(raw_weight)
+        except (TypeError, ValueError):
+            raise ValidationFailure("Edge weight must be a numeric value between 0 and 1.")
+        if not (0 <= weight_value <= 1):
+            raise ValidationFailure("Edge weight must be a numeric value between 0 and 1.")
         snapshot = graph.get_graph_snapshot()
         snapshot["edges"] = [*snapshot.get("edges", []), _edge_snapshot_payload(snapshot=snapshot, payload=payload)]
         _validate_live_snapshot(snapshot)
@@ -3494,6 +3501,13 @@ def create_http_application(app_server: WaggleServer, config: AppConfig) -> Star
             for item in snapshot.get("edges", [])
         ]
         _validate_live_snapshot(snapshot)
+        if "weight" in payload and payload.get("weight") is not None:
+            try:
+                weight_value = float(payload["weight"])
+            except (TypeError, ValueError):
+                raise ValidationFailure("Edge weight must be a numeric value between 0 and 1.")
+            if not (0 <= weight_value <= 1):
+                raise ValidationFailure("Edge weight must be a numeric value between 0 and 1.")
         edge = graph.update_edge(
             edge_id=edge_id,
             source_id=str(payload.get("source_id", "")).strip() or None,
