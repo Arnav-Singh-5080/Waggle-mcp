@@ -1505,10 +1505,10 @@ def test_default_graph_prefers_codex_waggle_db_path_when_env_is_unset(
     import waggle.config
     configured_db = tmp_path / ".waggle" / "memory.db"
     write_waggle_codex_config(tmp_path, configured_db)
-    
+
     def mock_discover(home=None):
         return waggle.config._discover_codex_waggle_db_path(home=tmp_path)
-    
+
     monkeypatch.setattr(waggle.config, "_discover_codex_waggle_db_path", mock_discover)
 
     graph = _default_graph()
