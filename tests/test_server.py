@@ -1460,6 +1460,7 @@ def test_default_graph_uses_home_scoped_sqlite_path(monkeypatch: pytest.MonkeyPa
     monkeypatch.delenv("WAGGLE_DB_PATH", raising=False)
     # Patch Path.home in waggle.config where it's actually called
     import waggle.config
+
     monkeypatch.setattr(waggle.config, "DEFAULT_DB_PATH", str(tmp_path / ".waggle" / "waggle.db"))
 
     graph = _default_graph()
@@ -1503,6 +1504,7 @@ def test_default_graph_prefers_codex_waggle_db_path_when_env_is_unset(
     monkeypatch.delenv("WAGGLE_DB_PATH", raising=False)
     # Patch _discover_codex_waggle_db_path to use tmp_path
     import waggle.config
+
     configured_db = tmp_path / ".waggle" / "memory.db"
     write_waggle_codex_config(tmp_path, configured_db)
 
