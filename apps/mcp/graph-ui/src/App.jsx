@@ -676,6 +676,11 @@ export function App() {
   };
 
   const runTranscriptSearch = async () => {
+    if (transcriptSearch.trim() === "") {
+      setTranscriptHits([]);
+      setToast("Please enter a search query.");
+      return;
+    }
     if (boot.sampleMode) {
       const queryText = transcriptSearch.trim().toLowerCase();
       setTranscriptHits(
