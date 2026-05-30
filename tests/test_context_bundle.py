@@ -81,4 +81,3 @@ def test_resolve_output_paths_custom_output_path(tmp_path):
 
     assert md_path == output_file.with_suffix(".md")
     assert json_path == output_file.with_suffix(".json")
-
