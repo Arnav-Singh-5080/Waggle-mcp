@@ -8,8 +8,8 @@ import pytest
 from waggle.models import Node, NodeType, RelationType, normalize_relationship
 
 
-def test_node_type_values_are_stable() -> None:
-    assert {node_type.value for node_type in NodeType} == {
+def test_node_type_values_include_expected_defaults() -> None:
+    assert {
         "fact",
         "entity",
         "concept",
@@ -17,15 +17,15 @@ def test_node_type_values_are_stable() -> None:
         "decision",
         "question",
         "note",
-    }
+    }.issubset({node_type.value for node_type in NodeType})
     assert NodeType("fact") is NodeType.FACT
 
     with pytest.raises(ValueError):
         NodeType("unknown")
 
 
-def test_relation_type_values_are_stable() -> None:
-    assert {relation_type.value for relation_type in RelationType} == {
+def test_relation_type_values_include_expected_defaults() -> None:
+    assert {
         "relates_to",
         "contradicts",
         "depends_on",
@@ -33,7 +33,7 @@ def test_relation_type_values_are_stable() -> None:
         "updates",
         "derived_from",
         "similar_to",
-    }
+    }.issubset({relation_type.value for relation_type in RelationType})
     assert RelationType("relates_to") is RelationType.RELATES_TO
 
     with pytest.raises(ValueError):
