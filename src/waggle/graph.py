@@ -1,6 +1,4 @@
 from __future__ import annotations
-from contextlib import contextmanager
-from typing import Any, Generator, Iterable, Optional
 
 import hashlib
 import heapq
@@ -12,7 +10,8 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -688,51 +687,52 @@ def _normalized_content_hash(text: str) -> str:
     normalized = normalize_text(text)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
+
 class _ReadWriteLock:
     """A readers-writer lock with same-thread upgrade detection.
- 
+
     Allows multiple concurrent readers **or** one exclusive writer at a time.
- 
+
     Reentrant rules
     ---------------
     * Writer → writer  : allowed (recursive write, depth-counted).
     * Writer → reader  : allowed (writer already holds exclusive access).
     * Reader → reader  : allowed (re-entrant reads tracked per-thread).
-    * Reader → writer  : **refused** – raises ``RuntimeError`` immediately.
- 
+    * Reader → writer  : **refused** - raises ``RuntimeError`` immediately.
+
       Upgrading a read lock to a write lock on the same thread would
       deadlock if taken naively: the write-acquire waits for all readers to
       drain, but the only reader is the calling thread itself.  Rather than
       hanging silently, the lock raises a clear error so the caller can
       restructure to acquire the write lock from the outset.
- 
+
     Usage
     -----
     Write lock (``__enter__`` / ``__exit__``)::
- 
+
         with self._lock:
             ...  # exclusive write
- 
+
     Read lock (``lock.read()`` context manager)::
- 
+
         with self._lock.read():
             ...  # shared read
     """
- 
+
     def __init__(self) -> None:
         self._cond = threading.Condition(threading.Lock())
         self._readers: int = 0
         self._write_owner: int | None = None
         self._write_depth: int = 0
         self._reader_threads: dict[int, int] = {}
- 
-    def __enter__(self) -> "_ReadWriteLock":
+
+    def __enter__(self) -> _ReadWriteLock:
         self._acquire_write()
         return self
- 
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self._release_write()
- 
+
     def _acquire_write(self) -> None:
         tid = threading.get_ident()
         with self._cond:
@@ -746,33 +746,31 @@ class _ReadWriteLock:
                     "thread.  Acquire the write lock from the outset instead "
                     "of nesting it inside a read context."
                 )
- 
+
             while self._readers > 0 or self._write_owner is not None:
                 self._cond.wait()
- 
+
             self._write_owner = tid
             self._write_depth = 1
- 
+
     def _release_write(self) -> None:
         tid = threading.get_ident()
         with self._cond:
             if self._write_owner != tid:
-                raise RuntimeError(
-                    "Attempt to release a write lock not held by this thread."
-                )
+                raise RuntimeError("Attempt to release a write lock not held by this thread.")
             self._write_depth -= 1
             if self._write_depth == 0:
                 self._write_owner = None
                 self._cond.notify_all()
- 
+
     @contextmanager
     def read(self) -> Generator[None, None, None]:
         """Shared read-lock context manager.
- 
+
         Multiple threads may hold the read lock simultaneously.
         A thread that already holds the **write** lock may enter a read
         context freely (it already owns exclusive access).
- 
+
         Raises
         ------
         RuntimeError
@@ -785,38 +783,36 @@ class _ReadWriteLock:
             yield
         finally:
             self._release_read()
- 
+
     def _acquire_read(self) -> None:
         tid = threading.get_ident()
         with self._cond:
-           
             if self._write_owner == tid:
                 return
- 
+
             while self._write_owner is not None:
                 self._cond.wait()
- 
+
             self._readers += 1
             self._reader_threads[tid] = self._reader_threads.get(tid, 0) + 1
- 
+
     def _release_read(self) -> None:
         tid = threading.get_ident()
         with self._cond:
             if self._write_owner == tid:
                 return
- 
+
             if self._reader_threads.get(tid, 0) == 0:
-                raise RuntimeError(
-                    "Attempt to release a read lock not held by this thread."
-                )
- 
+                raise RuntimeError("Attempt to release a read lock not held by this thread.")
+
             self._reader_threads[tid] -= 1
             if self._reader_threads[tid] == 0:
                 del self._reader_threads[tid]
- 
+
             self._readers -= 1
             if self._readers == 0:
                 self._cond.notify_all()
+
 
 class MemoryGraph:
     """SQLite-backed graph memory with embedding-assisted retrieval."""

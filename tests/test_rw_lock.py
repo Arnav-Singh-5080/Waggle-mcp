@@ -1,4 +1,4 @@
-"""Tests for _ReadWriteLock – resolves issue #67.
+"""Tests for _ReadWriteLock - resolves issue #67.
 
 File: tests/test_rw_lock.py
 
@@ -25,11 +25,13 @@ import pytest
 
 from waggle.graph import _ReadWriteLock
 
+
 def _start(fn, *, daemon: bool = True) -> threading.Thread:
     """Start *fn* in a thread and return it."""
     t = threading.Thread(target=fn, daemon=daemon)
     t.start()
     return t
+
 
 class TestWriteLock:
     def test_exclusive_between_threads(self):
@@ -54,10 +56,8 @@ class TestWriteLock:
     def test_recursive_write_same_thread(self):
         """Same thread may re-enter the write lock."""
         lock = _ReadWriteLock()
-        with lock:
-            with lock:
-                with lock:
-                    pass  
+        with lock, lock, lock:
+            pass
 
     def test_writer_unblocks_waiter(self):
         """Once the writer releases, a waiting writer may proceed."""
@@ -94,6 +94,7 @@ class TestWriteLock:
         assert len(error) == 1
         lock._release_write()  # clean up
 
+
 class TestReadLock:
     def test_concurrent_readers_allowed(self):
         """Multiple threads may hold the read lock at the same time."""
@@ -104,14 +105,14 @@ class TestReadLock:
         def reader() -> None:
             with lock.read():
                 inside.append(1)
-                barrier.wait(timeout=3) 
+                barrier.wait(timeout=3)
                 inside.append(-1)
 
         threads = [_start(reader) for _ in range(4)]
         for t in threads:
             t.join(timeout=3)
 
-        assert sum(inside) == 0   
+        assert sum(inside) == 0
 
     def test_reader_blocked_by_writer(self):
         """A reader must wait while a writer holds the lock."""
@@ -142,7 +143,7 @@ class TestReadLock:
                 release_readers.wait(timeout=3)
 
         readers = [_start(reader) for _ in range(3)]
-        time.sleep(0.02)   
+        time.sleep(0.02)
 
         def writer() -> None:
             with lock:
@@ -160,9 +161,8 @@ class TestReadLock:
     def test_reentrant_reads_same_thread(self):
         """A thread may acquire the read lock multiple times."""
         lock = _ReadWriteLock()
-        with lock.read():
-            with lock.read():   
-                pass
+        with lock.read(), lock.read():
+            pass
 
     def test_release_by_non_holder_raises(self):
         """Releasing a read lock not held by this thread must raise RuntimeError."""
@@ -179,22 +179,19 @@ class TestReadLock:
         t.join(timeout=2)
         assert len(error) == 1
 
+
 class TestReentrant:
     def test_writer_can_enter_read_context(self):
         """A thread holding the write lock may enter a read context freely."""
         lock = _ReadWriteLock()
-        with lock:
-            with lock.read():   # writer shortcut — must not block
-                pass
+        with lock, lock.read():  # writer shortcut — must not block
+            pass
 
     def test_recursive_write_inside_read_from_writer(self):
         """Deep nesting: write → write → read → write."""
         lock = _ReadWriteLock()
-        with lock:
-            with lock:
-                with lock.read():
-                    with lock:
-                        pass
+        with lock, lock, lock.read(), lock:
+            pass
 
 
 class TestIssue67:
@@ -219,19 +216,17 @@ class TestIssue67:
         def workload() -> None:
             with lock.read():
                 try:
-                    with lock:              
+                    with lock:
                         outcome.append("deadlocked")
                 except RuntimeError as exc:
                     outcome.append(f"raised:{exc}")
 
         t = _start(workload)
-        t.join(timeout=2)  
+        t.join(timeout=2)
 
         assert not t.is_alive(), "Thread is still hanging — deadlock not fixed"
         assert len(outcome) == 1
-        assert outcome[0].startswith("raised:"), (
-            f"Expected RuntimeError, got: {outcome[0]!r}"
-        )
+        assert outcome[0].startswith("raised:"), f"Expected RuntimeError, got: {outcome[0]!r}"
 
     def test_no_thread_hangs(self):
         """Variant: Event-based assertion that the thread finishes within 2 s."""
@@ -253,10 +248,8 @@ class TestIssue67:
     def test_error_message_mentions_upgrade(self):
         """RuntimeError message must say 'upgrade' for debuggability."""
         lock = _ReadWriteLock()
-        with lock.read():
-            with pytest.raises(RuntimeError, match="upgrade"):
-                with lock:
-                    pass
+        with lock.read(), pytest.raises(RuntimeError, match="upgrade"), lock:
+            pass
 
     def test_lock_fully_usable_after_refused_upgrade(self):
         """
@@ -294,7 +287,7 @@ class TestIssue67:
         lock = _ReadWriteLock()
         with lock.read():
             pass
-        with lock:   
+        with lock:
             pass
 
     def test_nested_read_depth_cleaned_up(self):
@@ -303,9 +296,8 @@ class TestIssue67:
         is permitted; intermediate releases must not cause false upgrade errors.
         """
         lock = _ReadWriteLock()
-        with lock.read():
-            with lock.read():
-                pass
+        with lock.read(), lock.read():
+            pass
         with lock:
             pass
 
