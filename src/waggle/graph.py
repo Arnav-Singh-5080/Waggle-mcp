@@ -910,10 +910,14 @@ class MemoryGraph:
             try:
                 journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
                 if journal_mode.upper() != "WAL":
-                    LOGGER.info(f"Migrating database {self.db_path} from {journal_mode} to WAL mode")
+                    LOGGER.info(
+                        "Migrating database %s from %s to WAL mode",
+                        self.db_path,
+                        journal_mode,
+                    )
                     connection.execute("PRAGMA journal_mode=WAL")
             except Exception as e:
-                LOGGER.warning(f"Could not verify journal mode: {e}")
+                LOGGER.warning("Could not verify journal mode: %s", e)
 
             # Initialize schema
             connection.executescript(SCHEMA_SQL)
@@ -1811,7 +1815,13 @@ class MemoryGraph:
             vec_a = self.embedding_model.from_bytes(emb_a)
             vec_b = self.embedding_model.from_bytes(emb_b)
             return self.embedding_model.cosine_similarity(vec_a, vec_b)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning(
+                "Failed to compute cosine similarity between nodes %s and %s: %s",
+                a.id,
+                b.id,
+                exc,
+            )
             return None
 
     def _backfill_transcript_storage(self, connection: sqlite3.Connection, *, batch_size: int = 100) -> None:
@@ -4278,49 +4288,52 @@ class MemoryGraph:
             )
             return node
 
-    def clear_session(self, *, session_id: str) -> ClearScopeResult:
+    def clear_session(self, *, session_id: str, dry_run: bool = False) -> ClearScopeResult:
         normalized_session = session_id.strip()
         if not normalized_session:
             raise ValueError("session_id is required.")
         with self._lock, self._connect() as connection:
-            result = self._clear_scope_rows(connection, scope="session", session_id=normalized_session)
-            self.emit_audit_event(
-                event_type="graph.scope_cleared",
-                resource_type="session",
-                resource_id=normalized_session,
-                action="delete",
-                metadata=result.model_dump(mode="json"),
-                connection=connection,
-            )
+            result = self._clear_scope_rows(connection, scope="session", session_id=normalized_session, dry_run=dry_run)
+            if not dry_run:
+                self.emit_audit_event(
+                    event_type="graph.scope_cleared",
+                    resource_type="session",
+                    resource_id=normalized_session,
+                    action="delete",
+                    metadata=result.model_dump(mode="json"),
+                    connection=connection,
+                )
             return result
 
-    def clear_project(self, *, project: str) -> ClearScopeResult:
+    def clear_project(self, *, project: str, dry_run: bool = False) -> ClearScopeResult:
         normalized_project = project.strip()
         if not normalized_project:
             raise ValueError("project is required.")
         with self._lock, self._connect() as connection:
-            result = self._clear_scope_rows(connection, scope="project", project=normalized_project)
-            self.emit_audit_event(
-                event_type="graph.scope_cleared",
-                resource_type="project",
-                resource_id=normalized_project,
-                action="delete",
-                metadata=result.model_dump(mode="json"),
-                connection=connection,
-            )
+            result = self._clear_scope_rows(connection, scope="project", project=normalized_project, dry_run=dry_run)
+            if not dry_run:
+                self.emit_audit_event(
+                    event_type="graph.scope_cleared",
+                    resource_type="project",
+                    resource_id=normalized_project,
+                    action="delete",
+                    metadata=result.model_dump(mode="json"),
+                    connection=connection,
+                )
             return result
 
-    def clear_all(self) -> ClearScopeResult:
+    def clear_all(self, *, dry_run: bool = False) -> ClearScopeResult:
         with self._lock, self._connect() as connection:
-            result = self._clear_scope_rows(connection, scope="all")
-            self.emit_audit_event(
-                event_type="graph.scope_cleared",
-                resource_type="tenant",
-                resource_id=self.tenant_id,
-                action="delete",
-                metadata=result.model_dump(mode="json"),
-                connection=connection,
-            )
+            result = self._clear_scope_rows(connection, scope="all", dry_run=dry_run)
+            if not dry_run:
+                self.emit_audit_event(
+                    event_type="graph.scope_cleared",
+                    resource_type="tenant",
+                    resource_id=self.tenant_id,
+                    action="delete",
+                    metadata=result.model_dump(mode="json"),
+                    connection=connection,
+                )
             return result
 
     def _clear_scope_rows(
@@ -4330,16 +4343,15 @@ class MemoryGraph:
         scope: str,
         project: str = "",
         session_id: str = "",
+        dry_run: bool = False,
     ) -> ClearScopeResult:
-        result = ClearScopeResult(scope=scope, project=project, session_id=session_id)
+        result = ClearScopeResult(scope=scope, project=project, session_id=session_id, dry_run=dry_run)
         if scope == "all":
-            node_ids = [
-                str(row["id"])
-                for row in connection.execute(
-                    "SELECT id FROM nodes WHERE tenant_id = ?",
-                    (self.tenant_id,),
-                ).fetchall()
-            ]
+            node_rows = connection.execute(
+                "SELECT id, node_type FROM nodes WHERE tenant_id = ?",
+                (self.tenant_id,),
+            ).fetchall()
+            node_ids = [str(row["id"]) for row in node_rows]
             window_ids = [
                 str(row["id"])
                 for row in connection.execute(
@@ -4355,13 +4367,23 @@ class MemoryGraph:
                 ).fetchall()
             ]
             result.deleted_graph_ui_rows = connection.execute(
-                "DELETE FROM graph_ui_state WHERE tenant_id = ?",
+                "SELECT COUNT(*) FROM graph_ui_state WHERE tenant_id = ?",
                 (self.tenant_id,),
-            ).rowcount
+            ).fetchone()[0]
             result.deleted_transcripts = connection.execute(
-                "DELETE FROM transcript_records WHERE tenant_id = ?",
+                "SELECT COUNT(*) FROM transcript_records WHERE tenant_id = ?",
                 (self.tenant_id,),
-            ).rowcount
+            ).fetchone()[0]
+
+            if not dry_run:
+                connection.execute(
+                    "DELETE FROM graph_ui_state WHERE tenant_id = ?",
+                    (self.tenant_id,),
+                )
+                connection.execute(
+                    "DELETE FROM transcript_records WHERE tenant_id = ?",
+                    (self.tenant_id,),
+                )
         elif scope == "project":
             repo_ids = [
                 str(row["id"])
@@ -4382,21 +4404,29 @@ class MemoryGraph:
                     (self.tenant_id, project),
                 ).fetchall()
             ]
-            node_ids = [
-                str(row["id"])
-                for row in connection.execute(
-                    "SELECT id FROM nodes WHERE tenant_id = ? AND project = ?",
-                    (self.tenant_id, project),
-                ).fetchall()
-            ]
+            node_rows = connection.execute(
+                "SELECT id, node_type FROM nodes WHERE tenant_id = ? AND project = ?",
+                (self.tenant_id, project),
+            ).fetchall()
+            node_ids = [str(row["id"]) for row in node_rows]
             result.deleted_graph_ui_rows = connection.execute(
-                "DELETE FROM graph_ui_state WHERE tenant_id = ? AND project = ?",
+                "SELECT COUNT(*) FROM graph_ui_state WHERE tenant_id = ? AND project = ?",
                 (self.tenant_id, project),
-            ).rowcount
+            ).fetchone()[0]
             result.deleted_transcripts = connection.execute(
-                "DELETE FROM transcript_records WHERE tenant_id = ? AND project = ?",
+                "SELECT COUNT(*) FROM transcript_records WHERE tenant_id = ? AND project = ?",
                 (self.tenant_id, project),
-            ).rowcount
+            ).fetchone()[0]
+
+            if not dry_run:
+                connection.execute(
+                    "DELETE FROM graph_ui_state WHERE tenant_id = ? AND project = ?",
+                    (self.tenant_id, project),
+                )
+                connection.execute(
+                    "DELETE FROM transcript_records WHERE tenant_id = ? AND project = ?",
+                    (self.tenant_id, project),
+                )
         elif scope == "session":
             repo_ids = []
             window_ids = [
@@ -4406,58 +4436,102 @@ class MemoryGraph:
                     (self.tenant_id, session_id),
                 ).fetchall()
             ]
-            node_ids = [
-                str(row["id"])
-                for row in connection.execute(
-                    "SELECT id FROM nodes WHERE tenant_id = ? AND session_id = ?",
-                    (self.tenant_id, session_id),
-                ).fetchall()
-            ]
+            node_rows = connection.execute(
+                "SELECT id, node_type FROM nodes WHERE tenant_id = ? AND session_id = ?",
+                (self.tenant_id, session_id),
+            ).fetchall()
+            node_ids = [str(row["id"]) for row in node_rows]
             result.deleted_graph_ui_rows = connection.execute(
-                "DELETE FROM graph_ui_state WHERE tenant_id = ? AND session_id = ?",
+                "SELECT COUNT(*) FROM graph_ui_state WHERE tenant_id = ? AND session_id = ?",
                 (self.tenant_id, session_id),
-            ).rowcount
+            ).fetchone()[0]
             result.deleted_transcripts = connection.execute(
-                "DELETE FROM transcript_records WHERE tenant_id = ? AND session_id = ?",
+                "SELECT COUNT(*) FROM transcript_records WHERE tenant_id = ? AND session_id = ?",
                 (self.tenant_id, session_id),
-            ).rowcount
+            ).fetchone()[0]
+
+            if not dry_run:
+                connection.execute(
+                    "DELETE FROM graph_ui_state WHERE tenant_id = ? AND session_id = ?",
+                    (self.tenant_id, session_id),
+                )
+                connection.execute(
+                    "DELETE FROM transcript_records WHERE tenant_id = ? AND session_id = ?",
+                    (self.tenant_id, session_id),
+                )
         else:
             raise ValueError(f"Unsupported clear scope: {scope}")
+
+        # Compute counts by node type
+        counts_by_node_type: dict[str, int] = {}
+        for row in node_rows:
+            nt = str(row["node_type"])
+            counts_by_node_type[nt] = counts_by_node_type.get(nt, 0) + 1
+        result.counts_by_node_type = counts_by_node_type
 
         if node_ids:
             placeholders = ", ".join("?" for _ in node_ids)
             result.deleted_edges = connection.execute(
                 f"""
-                DELETE FROM edges
+                SELECT COUNT(*) FROM edges
                 WHERE tenant_id = ? AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))
                 """,
                 (self.tenant_id, *node_ids, *node_ids),
-            ).rowcount
-            result.deleted_nodes = connection.execute(
-                f"DELETE FROM nodes WHERE tenant_id = ? AND id IN ({placeholders})",
-                (self.tenant_id, *node_ids),
-            ).rowcount
+            ).fetchone()[0]
+            result.deleted_nodes = len(node_ids)
+
+            if not dry_run:
+                connection.execute(
+                    f"""
+                    DELETE FROM edges
+                    WHERE tenant_id = ? AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))
+                    """,
+                    (self.tenant_id, *node_ids, *node_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM nodes WHERE tenant_id = ? AND id IN ({placeholders})",
+                    (self.tenant_id, *node_ids),
+                )
 
         if window_ids:
             placeholders = ", ".join("?" for _ in window_ids)
             result.deleted_context_window_edges = connection.execute(
                 f"""
-                DELETE FROM context_window_edges
+                SELECT COUNT(*) FROM context_window_edges
                 WHERE tenant_id = ? AND (source_window_id IN ({placeholders}) OR target_window_id IN ({placeholders}))
                 """,
                 (self.tenant_id, *window_ids, *window_ids),
-            ).rowcount
+            ).fetchone()[0]
             result.deleted_context_windows = connection.execute(
-                f"DELETE FROM context_windows WHERE tenant_id = ? AND id IN ({placeholders})",
+                f"SELECT COUNT(*) FROM context_windows WHERE tenant_id = ? AND id IN ({placeholders})",
                 (self.tenant_id, *window_ids),
-            ).rowcount
+            ).fetchone()[0]
+
+            if not dry_run:
+                connection.execute(
+                    f"""
+                    DELETE FROM context_window_edges
+                    WHERE tenant_id = ? AND (source_window_id IN ({placeholders}) OR target_window_id IN ({placeholders}))
+                    """,
+                    (self.tenant_id, *window_ids, *window_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM context_windows WHERE tenant_id = ? AND id IN ({placeholders})",
+                    (self.tenant_id, *window_ids),
+                )
 
         if repo_ids:
             placeholders = ", ".join("?" for _ in repo_ids)
             result.deleted_repos = connection.execute(
-                f"DELETE FROM repos WHERE tenant_id = ? AND id IN ({placeholders})",
+                f"SELECT COUNT(*) FROM repos WHERE tenant_id = ? AND id IN ({placeholders})",
                 (self.tenant_id, *repo_ids),
-            ).rowcount
+            ).fetchone()[0]
+
+            if not dry_run:
+                connection.execute(
+                    f"DELETE FROM repos WHERE tenant_id = ? AND id IN ({placeholders})",
+                    (self.tenant_id, *repo_ids),
+                )
         elif scope == "all":
             result.deleted_repos = len(repo_ids)
 
@@ -5637,7 +5711,21 @@ class MemoryGraph:
         """
         result = ObservationResult()
         stored_candidate_records: list[tuple[Node, list[str]]] = []
-        for candidate in candidates:
+        _candidate_texts = [str(c["content"]) for c in candidates]
+        _batch_embeddings: np.ndarray | None = None
+        if _candidate_texts:
+            try:
+                _batch_embeddings = self.embedding_model.embed_batch(_candidate_texts)
+                if _batch_embeddings is not None and len(_batch_embeddings) != len(_candidate_texts):
+                    raise ValueError(
+                        f"embed_batch returned {len(_batch_embeddings)} vectors, expected {len(_candidate_texts)}"
+                    )
+            except (AttributeError, NotImplementedError):
+                # embed_batch is not available on this model backend (e.g. a test
+                # stub).  Fall back gracefully: add_node will call embed() itself.
+                _batch_embeddings = None
+
+        for _idx, candidate in enumerate(candidates):
             candidate_tags = list(candidate.get("tags", []))
             speaker_tag = next((tag for tag in candidate_tags if str(tag).startswith("speaker:")), "")
             speaker = speaker_tag.split(":", 1)[1] if ":" in speaker_tag else "user"
@@ -5649,6 +5737,11 @@ class MemoryGraph:
                 turn_index=turn_index,
                 observed_at=observed_at,
                 session_id=session_id,
+            )
+            # Pass the pre-computed vector when available; otherwise let add_node
+            # fall back to its own embed() call (preserves backward-compatibility).
+            _precomputed: np.ndarray | None = (
+                _batch_embeddings[_idx] if _batch_embeddings is not None and _idx < len(_batch_embeddings) else None
             )
             store_result = self.add_node(
                 label=str(candidate["label"]),
@@ -5662,6 +5755,7 @@ class MemoryGraph:
                 session_id=session_id,
                 evidence_records=[evidence],
                 valid_from=observed_at,
+                embedding=_precomputed,
                 connection=connection,
             )
             result.stored_nodes.append(store_result.node)
@@ -5852,9 +5946,12 @@ class MemoryGraph:
                 except Exception as verbatim_err:
                     # Verbatim persistence is mandatory. If it fails, the entire call fails.
                     connection.rollback()
-                    logger.exception(f"Failed to persist verbatim turn {turn_pair_id}: {verbatim_err}")
+                    logger.exception(
+                        "Failed to persist verbatim turn %s: %s",
+                        turn_pair_id,
+                        verbatim_err,
+                    )
                     raise
-
                 # ===== STEP 2: RUN EXTRACTION IN TRY/EXCEPT (NON-BLOCKING) =====
                 extraction_candidates = []
                 try:
@@ -5863,7 +5960,11 @@ class MemoryGraph:
                         assistant_response=assistant_response,
                     )
                 except Exception as extraction_err:
-                    logger.exception(f"Extraction failed for turn {turn_pair_id}: {extraction_err}")
+                    logger.exception(
+                        "Extraction failed for turn %s: %s",
+                        turn_pair_id,
+                        extraction_err,
+                    )
                     result.extraction_errors.append(
                         f"Extraction exception: {type(extraction_err).__name__}: {extraction_err!s}"
                     )
@@ -5898,7 +5999,11 @@ class MemoryGraph:
                             candidates_result.conflicts
                         )  # conflicts are one type of inferred relation
                     except Exception as candidate_err:
-                        logger.exception(f"Candidate application failed for turn {turn_pair_id}: {candidate_err}")
+                        logger.exception(
+                            "Candidate application failed for turn %s: %s",
+                            turn_pair_id,
+                            candidate_err,
+                        )
                         result.extraction_errors.append(
                             f"Candidate storage exception: {type(candidate_err).__name__}: {candidate_err!s}"
                         )
@@ -5912,17 +6017,24 @@ class MemoryGraph:
                     self._update_window_node_count(connection, window_id)
                     self._mark_window_embedding_stale(connection, window_id)
                 except Exception as window_err:
-                    logger.warning(f"Window context update failed for turn {turn_pair_id}: {window_err}")
+                    logger.warning(
+                        "Window context update failed for turn %s: %s",
+                        turn_pair_id,
+                        window_err,
+                    )
                     result.extraction_errors.append(f"Window context error: {window_err!s}")
                     window_id = ""
                     repo_id = ""
-
             # Derive edges outside the transaction lock
             if window_id and repo_id:
                 try:
                     self.derive_context_window_edges(window_id, repo_id)
                 except Exception as edge_err:
-                    logger.warning(f"Context window edge derivation failed for turn {turn_pair_id}: {edge_err}")
+                    logger.warning(
+                        "Context window edge derivation failed for turn %s: %s",
+                        turn_pair_id,
+                        edge_err,
+                    )
                     result.extraction_errors.append(f"Edge derivation error: {edge_err!s}")
 
         return result
@@ -7370,6 +7482,7 @@ class MemoryGraph:
         project: str = "",
         session_id: str = "",
         limit: int = 200,
+        offset: int = 0,
     ) -> list[TranscriptRecord]:
         filters = ["tenant_id = ?"]
         params: list[Any] = [self.tenant_id]
@@ -7390,11 +7503,40 @@ class MemoryGraph:
                 FROM transcript_records
                 WHERE {" AND ".join(filters)}
                 ORDER BY observed_at ASC, turn_index ASC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (*params, max(1, int(limit))),
+                (*params, max(1, int(limit)), max(0, int(offset))),
             ).fetchall()
         return [self._row_to_transcript_record(row) for row in rows]
+
+    def count_transcript_records(
+        self,
+        *,
+        agent_id: str = "",
+        project: str = "",
+        session_id: str = "",
+    ) -> int:
+        filters = ["tenant_id = ?"]
+        params: list[Any] = [self.tenant_id]
+        if project.strip():
+            filters.append("project = ?")
+            params.append(project.strip())
+        if session_id.strip():
+            filters.append("session_id = ?")
+            params.append(session_id.strip())
+        elif agent_id.strip():
+            filters.append("agent_id = ?")
+            params.append(agent_id.strip())
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*) AS cnt
+                FROM transcript_records
+                WHERE {" AND ".join(filters)}
+                """,
+                tuple(params),
+            ).fetchone()
+        return int(row["cnt"] or 0)
 
     def search_transcript_records(
         self,
