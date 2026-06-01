@@ -4,16 +4,17 @@ Thank you for your interest in improving Waggle. This document covers everything
 
 ---
 
+
 ## Table of Contents
 
 - [Getting Started](#getting-started)
 - [First Contribution Paths](#first-contribution-paths)
 - [Project Architecture](#project-architecture)
 - [Running Tests](#running-tests)
+- [Writing Tests](#writing-tests)      <-- ADD THIS LINE
 - [Code Style](#code-style)
 - [Key Concepts](#key-concepts)
 - [How to Submit a PR](#how-to-submit-a-pr)
-
 ---
 
 ## Getting Started
@@ -152,7 +153,18 @@ WAGGLE_MODEL=deterministic pytest -v --tb=short
 If you change benchmark-facing numbers, regenerate the corresponding artifacts and update `tests/artifacts/README.md`.
 
 ---
+### Writing Tests
 
+Follow these rules when adding tests to the repository:
+
+* **File naming:** Test files must mirror the source code layout. Name your test file `tests/test_<module>.py` to match its source file at `src/waggle/<module>.py`.
+* **Test naming:** Use descriptive names indicating the behavior and condition being tested. Format your functions as `test_<function_or_behavior>_<condition>` (e.g., `test_hash_api_key_same_input_produces_same_hash`).
+* **Fixtures:** Use standard pytest fixtures to isolate environments. Use `tmp_path` for filesystem interactions, `monkeypatch.setenv` for environment variables, and `capsys` for capturing stdout. Always use `WAGGLE_MODEL=deterministic` unless explicitly testing live embedding quality.
+* **Construct real objects:** Instantiate actual Pydantic models from `src/waggle/models.py` rather than using raw dictionaries (`dicts`) or loose mocks. This ensures breaking schema changes or field renames fail the test suite instantly.
+* **What makes a test meaningful:** A test must fail when the behavior it checks is broken. If you can delete or bypass the underlying code under test and the test suite still passes, the test is invalid.
+* **One function per behavior:** Do not bundle multiple unrelated assertions into a single test function. Keeping tests isolated ensures failure logs remain specific and actionable.
+
+---
 ## Code Style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for both linting and formatting.
@@ -213,14 +225,16 @@ The offline-safe embedding mode. Uses SHA-256 hashing to produce a 256-dim float
 6. **Benchmark changes:** If your PR affects retrieval quality or token efficiency, include updated artifact links under `tests/artifacts/`.
 7. **Open the PR** — CI will run automatically and the maintainer will review.
 
+
 ### Pull Request Format
 
 Use the repository PR template and keep these sections complete:
 
-- Summary: concise bullets describing the user-visible or maintainer-visible change.
-- Testing: exact commands run, or a clear reason when a check was not run.
-- Checklist: issue link, docs impact, focused scope, and confirmation that no secrets or generated noise were committed.
-- Implementation notes: for non-trivial code, include a short walkthrough of the approach so reviewers can tell that you understand the change.
+- **Summary**: Concise bullets describing the user-visible or maintainer-visible change.
+- **Testing**: Exact commands run to verify the change.
+- **Test report**: Proof that the test suite is passing (e.g., a screenshot).
+- **Checklist**: Confirmation of issue linking, docs updates, and focused scope.
+- **Implementation notes**: For non-trivial code, include a short walkthrough of the approach.
 
 Maintainers may ask you to explain your implementation before approval. PRs that cannot be explained by the contributor will not be merged.
 
