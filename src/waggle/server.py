@@ -29,10 +29,12 @@ from mcp.server.lowlevel.server import request_ctx
 from mcp.server.models import InitializationOptions
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from waggle import __version__
 from waggle.abhi import (
@@ -2917,6 +2919,34 @@ class MCPHttpApp:
         return receive
 
 
+class _RequestBodySizeMiddleware:
+    """Reject requests whose Content-Length exceeds max_payload_bytes."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        content_length = headers.get("content-length")
+        if content_length is not None:
+            try:
+                length = int(content_length)
+            except (ValueError, TypeError):
+                length = 0
+            if length > self.max_bytes:
+                response = Response(
+                    f"Request body exceeds maximum allowed size of {self.max_bytes} bytes.",
+                    status_code=413,
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def create_http_application(app_server: WaggleServer, config: AppConfig) -> Starlette:
     service = MCPHttpApp(app_server, config)
 
@@ -3789,42 +3819,42 @@ def create_http_application(app_server: WaggleServer, config: AppConfig) -> Star
         )
         return JSONResponse([_serialize_audit_event(event) for event in events])
 
-    app = Starlette(
+    raw_app = Starlette(
         routes=[
             Route("/health/live", live),
             Route("/health/ready", ready),
             Route("/metrics", metrics_endpoint),
             Route("/graph", graph_editor),
-            Route("/api/graph", graph_snapshot, methods=["GET"]),
-            Route("/api/graph/transcripts", graph_transcripts, methods=["GET"]),
-            Route("/api/graph/retrieval-debug", graph_retrieval_debug, methods=["POST"]),
-            Route("/api/graph/abhi", graph_abhi_preview, methods=["GET"]),
-            Route("/api/graph/abhi/preview-import", graph_import_preview, methods=["POST"]),
-            Route("/api/graph/abhi/diff", graph_abhi_diff, methods=["POST"]),
-            Route("/api/graph/query", graph_query, methods=["POST"]),
-            Route("/api/graph/diff", graph_diff_feed, methods=["GET"]),
-            Route("/api/graph/ui", graph_save_ui, methods=["PATCH"]),
-            Route("/api/graph/restore", graph_restore, methods=["POST"]),
-            Route("/api/graph/nodes", graph_create_node, methods=["POST"]),
-            Route("/api/graph/nodes/{node_id:str}", graph_update_node, methods=["PATCH"]),
-            Route("/api/graph/nodes/{node_id:str}", graph_delete_node, methods=["DELETE"]),
-            Route("/api/graph/edges", graph_create_edge, methods=["POST"]),
-            Route("/api/graph/edges/{edge_id:str}", graph_update_edge, methods=["PATCH"]),
-            Route("/api/graph/edges/{edge_id:str}", graph_delete_edge, methods=["DELETE"]),
-            Route("/api/graph/export", graph_export, methods=["GET"]),
-            Route("/api/graph/import", graph_import, methods=["POST"]),
-            Route("/api/admin/retention", admin_retention_status, methods=["GET"]),
-            Route("/api/admin/retention", admin_retention_update, methods=["PUT", "PATCH"]),
-            Route("/api/admin/retention/prune", admin_retention_prune, methods=["POST"]),
-            Route("/api/admin/retention/runs", admin_retention_runs, methods=["GET"]),
-            Route("/api/admin/audit-events", admin_audit_events, methods=["GET"]),
+            Route("/api/graph", graph_snapshot),
+            Route("/api/graph/transcripts", graph_transcripts),
+            Route("/api/graph/retrieval-debug", graph_retrieval_debug),
+            Route("/api/graph/abhi", graph_abhi_preview),
+            Route("/api/graph/abhi/preview-import", graph_import_preview),
+            Route("/api/graph/abhi/diff", graph_abhi_diff),
+            Route("/api/graph/query", graph_query),
+            Route("/api/graph/diff", graph_diff_feed),
+            Route("/api/graph/ui", graph_save_ui),
+            Route("/api/graph/restore", graph_restore),
+            Route("/api/graph/nodes", graph_create_node),
+            Route("/api/graph/nodes/{node_id:str}", graph_update_node),
+            Route("/api/graph/nodes/{node_id:str}", graph_delete_node),
+            Route("/api/graph/edges", graph_create_edge),
+            Route("/api/graph/edges/{edge_id:str}", graph_update_edge),
+            Route("/api/graph/edges/{edge_id:str}", graph_delete_edge),
+            Route("/api/graph/export", graph_export),
+            Route("/api/graph/import", graph_import),
+            Route("/api/admin/retention", admin_retention_status),
+            Route("/api/admin/retention", admin_retention_update),
+            Route("/api/admin/retention/prune", admin_retention_prune),
+            Route("/api/admin/retention/runs", admin_retention_runs),
+            Route("/api/admin/audit-events", admin_audit_events),
             Mount("/graph-assets", app=StaticFiles(packages=[("waggle", "static/graph")], html=False, check_dir=False)),
             Mount("/mcp", app=service.mcp_asgi),
         ],
         lifespan=service.lifespan,
         exception_handlers={WaggleError: waggle_error_handler},
     )
-    return app
+    return _RequestBodySizeMiddleware(raw_app, max_bytes=config.max_payload_bytes)
 
 
 def _run_graph_editor_command(config: AppConfig, args: argparse.Namespace) -> int:
