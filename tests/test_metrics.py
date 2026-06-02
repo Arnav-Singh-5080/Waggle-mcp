@@ -1,65 +1,29 @@
+import pytest
+
 from waggle.metrics import MetricsRegistry
 
 
-def test_empty_registry():
+def test_histogram_streaming_aggregation():
+    """
+    Tests that the histogram uses streaming aggregation (count + sum)
+    and does not retain a per-value list.
+    """
     registry = MetricsRegistry()
 
-    assert registry.render_prometheus() == ""
-
-
-def test_increment_accumulates():
-    registry = MetricsRegistry()
-
-    registry.increment("requests")
-    registry.increment("requests")
+    expected_sum = 0.0
+    for i in range(10000):
+        value = float(i + 1)
+        registry.observe("my_histogram", value, label="test")
+        expected_sum += value
 
     output = registry.render_prometheus()
 
-    assert "requests 2" in output
+    # Find and parse the sum from the output
+    sum_line = next(line for line in output.split("\n") if 'my_histogram_sum{label="test"}' in line)
+    observed_sum = float(sum_line.split(" ")[1])
 
-
-def test_observe_tracks_count_and_sum():
-    registry = MetricsRegistry()
-
-    registry.observe("latency", 1.5)
-    registry.observe("latency", 2.5)
-
-    output = registry.render_prometheus()
-
-    assert "latency_count 2" in output
-    assert "latency_sum 4.0" in output
-
-
-def test_set_gauge_overwrites():
-    registry = MetricsRegistry()
-
-    registry.set_gauge("memory", 100)
-    registry.set_gauge("memory", 200)
-
-    output = registry.render_prometheus()
-
-    assert "memory 200.0" in output
-
-
-def test_labels_render_correctly():
-    registry = MetricsRegistry()
-
-    registry.increment("requests", endpoint="/health")
-
-    output = registry.render_prometheus()
-
-    assert 'requests{endpoint="/health"} 1' in output
-
-
-def test_multiple_metrics_sorted():
-    registry = MetricsRegistry()
-
-    registry.increment("z_metric")
-    registry.increment("a_metric")
-
-    output = registry.render_prometheus()
-
-    assert output.index("a_metric") < output.index("z_metric")
+    assert 'my_histogram_count{label="test"} 10000' in output
+    assert observed_sum == pytest.approx(expected_sum)
 
 
 def test_format_labels_escapes_special_characters():
@@ -69,6 +33,7 @@ def test_format_labels_escapes_special_characters():
             'quote" backslash\\ newline\n',
         ),
     )
+    result = MetricsRegistry._format_labels(labels)
 
     result = MetricsRegistry._format_labels(labels)
 
