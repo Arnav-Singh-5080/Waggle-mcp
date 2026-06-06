@@ -44,6 +44,7 @@ from waggle.evidence import build_observation_evidence, merge_evidence_records, 
 from waggle.intelligence import (
     TYPED_EDGE_CONFIDENCE,
     canonical_concept_overlap,
+    code_entity_boost,
     compatible_node_types,
     contains_conflicting_months,
     contains_conflicting_numbers,
@@ -332,7 +333,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     valid_to TEXT DEFAULT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    access_count INTEGER DEFAULT 0
+    access_count INTEGER DEFAULT 0,
+    community_id INTEGER DEFAULT NULL,
+    community_label TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS repos (
@@ -390,6 +393,7 @@ CREATE TABLE IF NOT EXISTS edges (
     target_id TEXT NOT NULL,
     relationship TEXT NOT NULL,
     weight REAL DEFAULT 1.0,
+    confidence TEXT DEFAULT 'explicit',
     metadata TEXT DEFAULT '{}',
     created_at TEXT NOT NULL,
     FOREIGN KEY (source_id) REFERENCES nodes(id) ON DELETE CASCADE,
@@ -1508,9 +1512,15 @@ class MemoryGraph:
             connection.execute("ALTER TABLE nodes ADD COLUMN source_turn_pair_id TEXT DEFAULT ''")
         if "aliases" not in node_columns:
             connection.execute("ALTER TABLE nodes ADD COLUMN aliases TEXT DEFAULT '[]'")
+        if "community_id" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN community_id INTEGER DEFAULT NULL")
+        if "community_label" not in node_columns:
+            connection.execute("ALTER TABLE nodes ADD COLUMN community_label TEXT DEFAULT ''")
         if "tenant_id" not in edge_columns:
             connection.execute(f"ALTER TABLE edges ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '{self.tenant_id}'")
             connection.execute("UPDATE edges SET tenant_id = ? WHERE tenant_id = ''", (self.tenant_id,))
+        if "confidence" not in edge_columns:
+            connection.execute("ALTER TABLE edges ADD COLUMN confidence TEXT DEFAULT 'explicit'")
         transcript_columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(transcript_records)").fetchall()
         }
@@ -2262,7 +2272,7 @@ class MemoryGraph:
                 """
                 SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type,
                        tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                       created_at, updated_at, access_count, tenant_id
+                       created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND context_window_id IS NULL
                 ORDER BY updated_at ASC
@@ -2330,7 +2340,7 @@ class MemoryGraph:
         query = """
             SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type,
                    tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                   created_at, updated_at, access_count, tenant_id
+                   created_at, updated_at, access_count, community_id, community_label, tenant_id
             FROM nodes
             WHERE tenant_id = ? AND context_window_id = ?
         """
@@ -2709,6 +2719,7 @@ class MemoryGraph:
         target_id: str,
         relationship: str | RelationType,
         weight: float = 1.0,
+        confidence: str = "explicit",
         metadata: dict[str, Any] | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> Edge:
@@ -2722,6 +2733,7 @@ class MemoryGraph:
             target_id=target_id,
             relationship=relationship,
             weight=weight,
+            confidence=confidence,
             metadata=metadata or {},
         )
 
@@ -2745,9 +2757,9 @@ class MemoryGraph:
             active_connection.execute(
                 """
                 INSERT INTO edges (
-                    id, tenant_id, source_id, target_id, relationship, weight, metadata, created_at
+                    id, tenant_id, source_id, target_id, relationship, weight, confidence, metadata, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     edge.id,
@@ -2756,6 +2768,7 @@ class MemoryGraph:
                     edge.target_id,
                     edge.relationship,
                     edge.weight,
+                    edge.confidence,
                     json.dumps(edge.metadata),
                     edge.created_at.isoformat(),
                 ),
@@ -3315,7 +3328,7 @@ class MemoryGraph:
                 """
                 SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type,
                        tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                       created_at, updated_at, access_count, embedding, tenant_id
+                       created_at, updated_at, access_count, community_id, community_label, embedding, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND context_window_id IN ({})
                   AND embedding IS NOT NULL
@@ -4059,7 +4072,7 @@ class MemoryGraph:
             node_rows = connection.execute(
                 """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                       created_at, updated_at, access_count, tenant_id
+                       created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
                 """,
@@ -4102,6 +4115,86 @@ class MemoryGraph:
                 query=f"related:{node_id}",
                 total_nodes_in_graph=len(nodes_by_id),
             )
+
+    def shortest_path(
+        self,
+        *,
+        source_id: str,
+        target_id: str,
+        max_depth: int = 5,
+    ) -> SubgraphResult:
+        """Return the shortest path between two memory nodes.
+
+        Searches for the shortest directed path from ``source_id`` to
+        ``target_id``, then falls back to an undirected search so that
+        relationships traversed in either direction are considered.  If no
+        path exists within ``max_depth`` hops an empty SubgraphResult is
+        returned (no exception).
+        """
+        if max_depth < 1:
+            raise ValueError("max_depth must be at least 1.")
+
+        with self._lock, self._connect() as connection:
+            self._require_node(connection, source_id)
+            self._require_node(connection, target_id)
+
+            node_rows = connection.execute(
+                """
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags,
+                       source_prompt, metadata, evidence_records, valid_from, valid_to,
+                       created_at, updated_at, access_count, community_id, community_label, tenant_id
+                FROM nodes
+                WHERE tenant_id = ?
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+            nodes_by_id = {row["id"]: self._row_to_node(row) for row in node_rows}
+
+            digraph = self._load_graph(connection, node_ids=nodes_by_id.keys())
+
+            path_ids: list[str] = []
+            try:
+                path_ids = nx.shortest_path(digraph, source=source_id, target=target_id)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                # Directed path failed — try undirected (relationships in either direction)
+                try:
+                    path_ids = nx.shortest_path(digraph.to_undirected(), source=source_id, target=target_id)
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    path_ids = []
+
+            # Enforce max_depth: path length is number of hops = len(path) - 1
+            if len(path_ids) - 1 > max_depth:
+                path_ids = []
+
+            if not path_ids:
+                return SubgraphResult(
+                    nodes=[],
+                    edges=[],
+                    query=f"path:{source_id}->{target_id}",
+                    total_nodes_in_graph=len(nodes_by_id),
+                )
+
+            path_nodes = [nodes_by_id[nid] for nid in path_ids if nid in nodes_by_id]
+            edges = self._fetch_edges_for_nodes(connection, [n.id for n in path_nodes])
+
+            # Score nodes: source = 1.0, each hop degrades by 0.2, target gets full score too
+            now = time.time()
+            for i, node in enumerate(path_nodes):
+                distance = i
+                edge_weight = self._strongest_edge_weight(node.id, edges)
+                similarity = max(0.0, 1.0 - (0.2 * distance))
+                self._apply_node_score(node, similarity=similarity, edge_weight=edge_weight, now=now)
+
+            self._increment_access_counts(connection, [n.id for n in path_nodes])
+            for node in path_nodes:
+                node.access_count += 1
+
+        return SubgraphResult(
+            nodes=path_nodes,
+            edges=edges,
+            query=f"path:{source_id}->{target_id}",
+            total_nodes_in_graph=len(nodes_by_id),
+        )
 
     def update_node(
         self,
@@ -4232,6 +4325,7 @@ class MemoryGraph:
                 target_id=target_id if target_id is not None else edge.target_id,
                 relationship=relationship if relationship is not None else edge.relationship,
                 weight=weight if weight is not None else edge.weight,
+                confidence=edge.confidence,
                 metadata=metadata if metadata is not None else edge.metadata,
                 created_at=edge.created_at,
             )
@@ -4559,7 +4653,7 @@ class MemoryGraph:
             rows = connection.execute(
                 """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                       created_at, updated_at, access_count, tenant_id
+                       created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
                 ORDER BY updated_at DESC, created_at DESC
@@ -4775,6 +4869,68 @@ class MemoryGraph:
         report["total_edges"] = total_edges
         report["total_edge_types"] = len(by_type)
         return report
+
+    def hub_analysis(self, *, top_n: int = 10, min_degree: int = 2) -> list[dict[str, Any]]:
+        """Return the most-connected nodes (hubs) by degree and betweenness centrality.
+
+        ``top_n`` controls how many hubs are returned.
+        ``min_degree`` filters out isolated or lightly connected nodes so only
+        meaningful hubs are surfaced.  Results are sorted by degree descending.
+        """
+        with self._lock, self._connect() as connection:
+            node_rows = connection.execute(
+                """
+                SELECT id, label, node_type, access_count, updated_at
+                FROM nodes
+                WHERE tenant_id = ?
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+            if not node_rows:
+                return []
+
+            node_ids = [row["id"] for row in node_rows]
+            node_meta = {
+                row["id"]: {
+                    "label": row["label"],
+                    "node_type": row["node_type"],
+                    "access_count": int(row["access_count"] or 0),
+                }
+                for row in node_rows
+            }
+
+            digraph = self._load_graph(connection, node_ids=node_ids)
+
+        undirected = digraph.to_undirected()
+        total_edges = undirected.number_of_edges()
+
+        degree_map = dict(undirected.degree())
+        # betweenness_centrality is O(VE) — only compute when graph is reasonably small
+        if undirected.number_of_nodes() <= 2000:
+            betweenness = nx.betweenness_centrality(undirected, normalized=True)
+        else:
+            betweenness = dict.fromkeys(node_ids, 0.0)
+
+        hubs = []
+        for node_id in node_ids:
+            degree = degree_map.get(node_id, 0)
+            if degree < min_degree:
+                continue
+            meta = node_meta[node_id]
+            hubs.append(
+                {
+                    "node_id": node_id,
+                    "label": meta["label"],
+                    "node_type": meta["node_type"],
+                    "degree": degree,
+                    "pct_of_edges": round(degree / (2 * total_edges), 4) if total_edges > 0 else 0.0,
+                    "betweenness_centrality": round(betweenness.get(node_id, 0.0), 4),
+                    "access_count": meta["access_count"],
+                }
+            )
+
+        hubs.sort(key=lambda h: (-h["degree"], -h["betweenness_centrality"]))
+        return hubs[:top_n]
 
     def export_graph_html(
         self,
@@ -5013,6 +5169,116 @@ class MemoryGraph:
         )
         return result
 
+    @staticmethod
+    def _cypher_escape(value: Any) -> str:
+        """Escape a value for embedding in a single-quoted Cypher string literal."""
+        text = str(value)
+        return text.replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
+    def _cypher_label(node_type: str) -> str:
+        """Map a node_type to a CamelCase Neo4j label (e.g. 'fact' -> 'Fact')."""
+        cleaned = re.sub(r"[^0-9a-zA-Z]+", " ", str(node_type)).strip()
+        return "".join(part.capitalize() for part in cleaned.split()) or "Node"
+
+    @staticmethod
+    def _cypher_rel_type(relationship: str) -> str:
+        """Map a relationship to an UPPER_SNAKE Neo4j relationship type."""
+        cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", str(relationship)).strip("_").upper()
+        if not cleaned or cleaned[0].isdigit():
+            cleaned = f"REL_{cleaned}" if cleaned else "RELATES_TO"
+        return cleaned
+
+    def export_cypher(
+        self,
+        *,
+        output_path: str | Path | None = None,
+        project: str = "",
+        agent_id: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        """Export the graph as Neo4j Cypher CREATE/MATCH statements.
+
+        Produces a ``.cypher`` script: a uniqueness constraint on ``:Memory(id)``,
+        one ``CREATE`` per node (labelled ``:Memory:{NodeType}``), and one
+        ``MATCH ... CREATE`` per edge.  Node ``id`` values are used to wire edges
+        so the script is order-independent.  Returns a dict with the output path
+        and node/edge counts.
+        """
+        snapshot = self.get_graph_snapshot(project=project, agent_id=agent_id, session_id=session_id)
+        nodes = snapshot.get("nodes", [])
+        edges = snapshot.get("edges", [])
+
+        lines: list[str] = [
+            "// Waggle memory graph — Neo4j Cypher export",
+            f"// tenant={self.tenant_id} nodes={len(nodes)} edges={len(edges)}",
+            "CREATE CONSTRAINT waggle_memory_id IF NOT EXISTS FOR (n:Memory) REQUIRE n.id IS UNIQUE;",
+            "",
+        ]
+
+        for node in nodes:
+            label = self._cypher_label(node.get("node_type", "note"))
+            props = {
+                "id": node.get("id", ""),
+                "label": node.get("label", ""),
+                "content": node.get("content", ""),
+                "node_type": node.get("node_type", ""),
+                "project": node.get("project", ""),
+                "agent_id": node.get("agent_id", ""),
+                "session_id": node.get("session_id", ""),
+                "created_at": node.get("created_at", ""),
+            }
+            if node.get("community_id") is not None:
+                props["community_id"] = node["community_id"]
+                props["community_label"] = node.get("community_label", "")
+            prop_parts = []
+            for key, val in props.items():
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    prop_parts.append(f"{key}: {val}")
+                else:
+                    prop_parts.append(f"{key}: '{self._cypher_escape(val)}'")
+            lines.append(f"CREATE (:Memory:{label} {{{', '.join(prop_parts)}}});")
+
+        lines.append("")
+
+        for edge in edges:
+            rel_type = self._cypher_rel_type(edge.get("relationship", "relates_to"))
+            weight = float(edge.get("weight", 1.0))
+            confidence = self._cypher_escape(edge.get("confidence", "explicit"))
+            source = self._cypher_escape(edge.get("source_id", ""))
+            target = self._cypher_escape(edge.get("target_id", ""))
+            lines.append(
+                f"MATCH (a:Memory {{id: '{source}'}}), (b:Memory {{id: '{target}'}}) "
+                f"CREATE (a)-[:{rel_type} {{weight: {weight}, confidence: '{confidence}'}}]->(b);"
+            )
+
+        content = "\n".join(lines) + "\n"
+
+        if output_path is None:
+            self.export_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = utc_now().strftime("%Y%m%d-%H%M%S")
+            destination = self.export_dir / f"waggle-memory-{timestamp}.cypher"
+        else:
+            destination = Path(output_path).expanduser()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+        destination.write_text(content, encoding="utf-8")
+        result = {
+            "output_path": str(destination),
+            "tenant_id": self.tenant_id,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "format": "cypher",
+        }
+        self.emit_audit_event(
+            event_type="export.created",
+            resource_type="cypher",
+            resource_id=result["output_path"],
+            action="export",
+            metadata={"format": "cypher", "node_count": len(nodes), "edge_count": len(edges)},
+        )
+        return result
+
     def export_abhi(
         self,
         *,
@@ -5153,7 +5419,7 @@ class MemoryGraph:
                 node_rows = connection.execute(
                     """
                     SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
-                           evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
+                           evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, tenant_id
                     FROM nodes
                     WHERE tenant_id = ?
                     ORDER BY updated_at DESC, created_at DESC
@@ -5236,7 +5502,7 @@ class MemoryGraph:
             node_rows = connection.execute(
                 """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
-                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
+                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
                 ORDER BY updated_at DESC, created_at DESC
@@ -5308,7 +5574,7 @@ class MemoryGraph:
             all_rows = connection.execute(
                 """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
-                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
+                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
                 """,
@@ -5664,6 +5930,7 @@ class MemoryGraph:
                     source_id=node.id,
                     target_id=context_node.id,
                     relationship=RelationType.PART_OF,
+                    confidence="inferred",
                     metadata={"origin": "decomposition"},
                 )
 
@@ -5684,6 +5951,7 @@ class MemoryGraph:
                     source_id=previous.id,
                     target_id=node.id,
                     relationship=rel_type,
+                    confidence="weak" if confidence < 0.6 else "inferred",
                     metadata={"origin": "decomposition", "edge_confidence": confidence},
                 )
 
@@ -5885,14 +6153,97 @@ class MemoryGraph:
                     key = (from_id, to_id, relationship.value)
                     if key in created_pairs:
                         continue
+                    # Map numeric confidence to the categorical field:
+                    # entity-mention and high-cosine get "inferred"; low-signal gets "weak"
+                    conf_label = "weak" if confidence < 0.6 else "inferred"
                     self.add_edge(
                         source_id=from_id,
                         target_id=to_id,
                         relationship=relationship,
+                        confidence=conf_label,
                         metadata={"origin": edge_origin, "inferred": reason, "edge_confidence": confidence},
                         connection=connection,
                     )
                     created_pairs.add(key)
+
+    def _extract_and_link_code_entities(
+        self,
+        *,
+        transcript: str,
+        context_nodes: list[Node],
+        agent_id: str,
+        project: str,
+        session_id: str,
+        connection: sqlite3.Connection,
+    ) -> int:
+        """Parse fenced code blocks, store code entities, and link them to context.
+
+        For each function/class found in a code block: reuse an existing ENTITY
+        node with the same label if one exists (e.g. a Graphify-imported symbol),
+        otherwise create a new ENTITY node tagged ``code``.  Each code entity is
+        linked to the conversation's extracted nodes with a RELATES_TO edge so a
+        later query can traverse from "what we discussed" to "the code involved".
+
+        Returns the number of code entities processed.  No-op (returns 0) when
+        the transcript contains no fenced code blocks.
+        """
+        from waggle.code_extraction import extract_code_entities
+
+        entities = extract_code_entities(transcript)
+        if not entities:
+            return 0
+
+        # Index existing ENTITY nodes by lowercased label for reuse.
+        existing_rows = connection.execute(
+            "SELECT id, label FROM nodes WHERE tenant_id = ? AND node_type = ?",
+            (self.tenant_id, NodeType.ENTITY.value),
+        ).fetchall()
+        existing_by_label = {str(row["label"]).strip().lower(): row["id"] for row in existing_rows}
+
+        # Cap links per code entity to avoid edge explosion on large turns.
+        link_targets = list(context_nodes)[:5]
+
+        processed = 0
+        for entity in entities:
+            label = entity.name.strip()
+            if not label:
+                continue
+            existing_id = existing_by_label.get(label.lower())
+            if existing_id is not None:
+                code_node_id = existing_id
+            else:
+                stored = self.add_node(
+                    label=label[:200],
+                    content=f"{entity.entity_type} {entity.name} ({entity.language})\n{entity.snippet}",
+                    node_type=NodeType.ENTITY,
+                    tags=["code", entity.language],
+                    agent_id=agent_id,
+                    project=project,
+                    session_id=session_id,
+                    metadata={
+                        "code_entity": True,
+                        "code_entity_type": entity.entity_type,
+                        "code_language": entity.language,
+                    },
+                    connection=connection,
+                )
+                code_node_id = stored.node.id
+                existing_by_label[label.lower()] = code_node_id
+
+            for context_node in link_targets:
+                if context_node.id == code_node_id:
+                    continue
+                self.add_edge(
+                    source_id=context_node.id,
+                    target_id=code_node_id,
+                    relationship=RelationType.RELATES_TO,
+                    confidence="inferred",
+                    metadata={"origin": "code_extraction", "code_entity_type": entity.entity_type},
+                    connection=connection,
+                )
+            processed += 1
+
+        return processed
 
     def observe_conversation(
         self,
@@ -6017,6 +6368,25 @@ class MemoryGraph:
                             f"Candidate storage exception: {type(candidate_err).__name__}: {candidate_err!s}"
                         )
                         # Continue: verbatim persists regardless
+
+                # ===== STEP 3.5: CODE ENTITY EXTRACTION (ADDITIVE, NO-OP FOR PROSE) =====
+                # Only fires when the turn contains fenced code blocks; otherwise a no-op.
+                try:
+                    result.code_entities_extracted = self._extract_and_link_code_entities(
+                        transcript=transcript,
+                        context_nodes=list(result.stored_nodes),
+                        agent_id=agent_id,
+                        project=project,
+                        session_id=session_id,
+                        connection=connection,
+                    )
+                except Exception as code_err:
+                    logger.warning(
+                        "Code entity extraction failed for turn %s: %s",
+                        turn_pair_id,
+                        code_err,
+                    )
+                    result.extraction_errors.append(f"Code extraction error: {code_err!s}")
 
                 # ===== STEP 4: WINDOW CONTEXT AND EDGES (SAME AS BEFORE) =====
                 try:
@@ -6383,7 +6753,7 @@ class MemoryGraph:
                 for row in connection.execute(
                     """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                       created_at, updated_at, access_count, tenant_id
+                       created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND created_at >= ?
                     ORDER BY created_at DESC
@@ -6396,7 +6766,7 @@ class MemoryGraph:
                 for row in connection.execute(
                     """
                     SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                           created_at, updated_at, access_count, tenant_id
+                           created_at, updated_at, access_count, community_id, community_label, tenant_id
                     FROM nodes
                     WHERE tenant_id = ?
                       AND updated_at >= ?
@@ -6488,7 +6858,7 @@ class MemoryGraph:
             node_rows = connection.execute(
                 """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata, evidence_records, valid_from, valid_to,
-                       created_at, updated_at, access_count, embedding, tenant_id
+                       created_at, updated_at, access_count, community_id, community_label, embedding, tenant_id
                 FROM nodes
                 WHERE tenant_id = ? AND embedding IS NOT NULL
                 """,
@@ -6603,7 +6973,7 @@ class MemoryGraph:
             node_rows = connection.execute(
                 """
                 SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
-                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
+                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, tenant_id
                 FROM nodes
                 WHERE tenant_id = ?
                 """,
@@ -6640,6 +7010,92 @@ class MemoryGraph:
                 )
             )
         return TopicResult(clusters=clusters, total_clusters=len(clusters))
+
+    def recompute_communities(self, *, resolution: float = 1.0) -> dict[str, Any]:
+        """Run community detection and persist cluster IDs/labels onto each node.
+
+        Uses the Louvain algorithm (via python-louvain) with a greedy-modularity
+        fallback.  ``resolution`` tunes granularity: higher values yield more,
+        smaller communities.  Cluster IDs are renumbered densely from 0 in order
+        of descending size so the largest community is always 0.  Returns a
+        summary with cluster count, largest cluster size, and nodes updated.
+        """
+        if resolution <= 0:
+            raise ValueError("resolution must be positive.")
+
+        with self._lock, self._connect() as connection:
+            node_rows = connection.execute(
+                """
+                SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
+                       evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, tenant_id
+                FROM nodes
+                WHERE tenant_id = ?
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+            if not node_rows:
+                return {"cluster_count": 0, "largest_cluster_size": 0, "nodes_updated": 0}
+
+            nodes = [self._row_to_node(row) for row in node_rows]
+            undirected = self._load_graph(connection, node_ids=[node.id for node in nodes]).to_undirected()
+            partition = self._build_topic_partition(undirected, nodes, resolution=resolution)
+
+            # Group nodes by raw cluster id, then renumber densely by size (largest -> 0)
+            members_by_cluster: dict[int, list[Node]] = {}
+            for node in nodes:
+                raw_cluster = int(partition.get(node.id, 0))
+                members_by_cluster.setdefault(raw_cluster, []).append(node)
+
+            ordered_clusters = sorted(members_by_cluster.values(), key=lambda members: (-len(members), members[0].id))
+
+            updated = 0
+            largest = 0
+            for dense_id, members in enumerate(ordered_clusters):
+                label, _ = summarize_topic(members)
+                largest = max(largest, len(members))
+                for node in members:
+                    connection.execute(
+                        "UPDATE nodes SET community_id = ?, community_label = ? WHERE id = ? AND tenant_id = ?",
+                        (dense_id, label, node.id, self.tenant_id),
+                    )
+                    updated += 1
+
+        return {
+            "cluster_count": len(ordered_clusters),
+            "largest_cluster_size": largest,
+            "nodes_updated": updated,
+        }
+
+    def get_communities(self) -> list[dict[str, Any]]:
+        """Return persisted community clusters with member counts and labels.
+
+        Reads the stored ``community_id``/``community_label`` columns (populated
+        by ``recompute_communities``).  Nodes that have not been assigned a
+        community are grouped under a synthetic ``-1`` "unclustered" bucket.
+        """
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT community_id, community_label, COUNT(*) AS member_count
+                FROM nodes
+                WHERE tenant_id = ?
+                GROUP BY community_id, community_label
+                ORDER BY member_count DESC
+                """,
+                (self.tenant_id,),
+            ).fetchall()
+
+        communities: list[dict[str, Any]] = []
+        for row in rows:
+            cid = row["community_id"]
+            communities.append(
+                {
+                    "community_id": int(cid) if cid is not None else -1,
+                    "label": row["community_label"] or ("unclustered" if cid is None else f"cluster-{cid}"),
+                    "member_count": int(row["member_count"]),
+                }
+            )
+        return communities
 
     def _build_prime_summary(
         self,
@@ -6718,7 +7174,7 @@ class MemoryGraph:
         rows = connection.execute(
             f"""
             SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type, tags, source_prompt, metadata, evidence_records,
-                   valid_from, valid_to, created_at, updated_at, access_count, embedding, tenant_id
+                   valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, embedding, tenant_id
             FROM nodes
             WHERE {" AND ".join(filters)}
             """,
@@ -7146,7 +7602,7 @@ class MemoryGraph:
         rows = connection.execute(
             f"""
             SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type, tags, source_prompt, metadata,
-                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count, embedding, tenant_id
+                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, embedding, tenant_id
             FROM nodes
             WHERE {" AND ".join(filters)}
             """,
@@ -7235,7 +7691,7 @@ class MemoryGraph:
         return connection.execute(
             """
             SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type, tags, aliases, source_prompt, embedding_model_id, embedding_dim, source_turn_pair_id, metadata, evidence_records, valid_from, valid_to,
-                   created_at, updated_at, access_count, embedding, tenant_id
+                   created_at, updated_at, access_count, community_id, community_label, embedding, tenant_id
             FROM nodes
             WHERE id = ? AND tenant_id = ?
             """,
@@ -7253,7 +7709,7 @@ class MemoryGraph:
         rows = connection.execute(
             f"""
             SELECT id, agent_id, project, session_id, context_window_id, label, content, node_type, tags, aliases, source_prompt, embedding_model_id, embedding_dim, source_turn_pair_id, metadata, evidence_records, valid_from, valid_to,
-                   created_at, updated_at, access_count, tenant_id
+                   created_at, updated_at, access_count, community_id, community_label, tenant_id
             FROM nodes
             WHERE tenant_id = ? AND id IN ({placeholders})
             """,
@@ -7403,6 +7859,10 @@ class MemoryGraph:
             created_at=_parse_datetime(row["created_at"]),
             updated_at=_parse_datetime(row["updated_at"]),
             access_count=int(row["access_count"] or 0),
+            community_id=int(row["community_id"])
+            if "community_id" in row_keys and row["community_id"] is not None
+            else None,
+            community_label=row["community_label"] if "community_label" in row_keys and row["community_label"] else "",
         )
 
     def _row_to_context_window(self, row: sqlite3.Row) -> ContextWindow:
@@ -7444,6 +7904,7 @@ class MemoryGraph:
             target_id=row["target_id"],
             relationship=row["relationship"],
             weight=float(row["weight"]),
+            confidence=str(row["confidence"]) if "confidence" in row_keys and row["confidence"] else "explicit",
             metadata=json.loads(row["metadata"] or "{}"),
             created_at=_parse_datetime(row["created_at"]),
         )
@@ -8184,10 +8645,13 @@ class MemoryGraph:
     def _lexical_score_for_node(self, query: str, node: Node) -> float:
         tag_text = " ".join(tag.replace(":", " ").replace("_", " ").replace("-", " ") for tag in node.tags)
         content_score = lexical_overlap(query, node.label, node.content)
-        if not tag_text:
-            return content_score
-        tag_score = lexical_overlap(query, tag_text, "")
-        return max(content_score, tag_score)
+        if tag_text:
+            tag_score = lexical_overlap(query, tag_text, "")
+            content_score = max(content_score, tag_score)
+        # Unified code+conversation retrieval: lift code-entity nodes (from code
+        # extraction or Graphify import) when the query references code.
+        boosted = content_score + code_entity_boost(query, node)
+        return min(boosted, 1.0)
 
     def _diversify_multi_intent_nodes(
         self,
@@ -8422,15 +8886,17 @@ class MemoryGraph:
 
         return selected_nodes + coverage_nodes[: max_nodes - len(selected_nodes)]
 
-    def _build_topic_partition(self, graph: nx.Graph, nodes: list[Node]) -> dict[str, int]:
+    def _build_topic_partition(
+        self, graph: nx.Graph, nodes: list[Node], *, resolution: float = 1.0
+    ) -> dict[str, int]:
         if graph.number_of_edges() == 0:
             return {node.id: index for index, node in enumerate(nodes)}
         try:
             import community  # type: ignore[import-not-found]
 
-            return community.best_partition(graph)
+            return community.best_partition(graph, resolution=resolution)
         except ImportError:  # pragma: no cover
-            communities = nx.algorithms.community.greedy_modularity_communities(graph)
+            communities = nx.algorithms.community.greedy_modularity_communities(graph, resolution=resolution)
             partition: dict[str, int] = {}
             for cluster_id, members in enumerate(communities):
                 for member in members:
@@ -8449,7 +8915,7 @@ class MemoryGraph:
         # whose source OR target is in the current seed set.
         rows = connection.execute(
             f"""
-            SELECT id, source_id, target_id, relationship, weight, metadata, created_at, tenant_id
+            SELECT id, source_id, target_id, relationship, weight, confidence, metadata, created_at, tenant_id
             FROM edges
             WHERE tenant_id = ?
               AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))
@@ -8482,7 +8948,7 @@ class MemoryGraph:
     ) -> Edge | None:
         row = connection.execute(
             """
-            SELECT id, source_id, target_id, relationship, weight, metadata, created_at, tenant_id
+            SELECT id, source_id, target_id, relationship, weight, confidence, metadata, created_at, tenant_id
             FROM edges
             WHERE tenant_id = ? AND source_id = ? AND target_id = ? AND relationship = ?
             LIMIT 1
@@ -8536,7 +9002,7 @@ class MemoryGraph:
         rows = connection.execute(
             """
             SELECT id, agent_id, project, session_id, label, content, node_type, tags, source_prompt, metadata,
-                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count, tenant_id
+                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count, community_id, community_label, tenant_id
             FROM nodes
             WHERE tenant_id = ?
             ORDER BY updated_at DESC
@@ -8565,7 +9031,7 @@ class MemoryGraph:
     def _fetch_edge_row(self, connection: sqlite3.Connection, edge_id: str) -> sqlite3.Row | None:
         return connection.execute(
             """
-            SELECT id, source_id, target_id, relationship, weight, metadata, created_at, tenant_id
+            SELECT id, source_id, target_id, relationship, weight, confidence, metadata, created_at, tenant_id
             FROM edges
             WHERE id = ? AND tenant_id = ?
             """,
@@ -8590,7 +9056,8 @@ class MemoryGraph:
             """
             SELECT id, tenant_id, agent_id, project, session_id, context_window_id, label, content, node_type, tags, source_prompt,
                    embedding_model_id, embedding_dim, source_turn_pair_id, metadata,
-                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count, embedding
+                   evidence_records, valid_from, valid_to, created_at, updated_at, access_count,
+                   community_id, community_label, embedding
             FROM nodes
             WHERE tenant_id = ?
             ORDER BY created_at ASC
@@ -8599,7 +9066,7 @@ class MemoryGraph:
         ).fetchall()
         edge_rows = connection.execute(
             """
-            SELECT id, tenant_id, source_id, target_id, relationship, weight, metadata, created_at
+            SELECT id, tenant_id, source_id, target_id, relationship, weight, confidence, metadata, created_at
             FROM edges
             WHERE tenant_id = ?
             ORDER BY created_at ASC
@@ -8715,6 +9182,8 @@ class MemoryGraph:
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "access_count": int(row["access_count"] or 0),
+                    "community_id": int(row["community_id"]) if row["community_id"] is not None else None,
+                    "community_label": row["community_label"] or "",
                     "embedding": row["embedding"] if include_embeddings else None,
                 }
                 for row in node_rows
@@ -8727,6 +9196,7 @@ class MemoryGraph:
                     "target_id": row["target_id"],
                     "relationship": row["relationship"],
                     "weight": float(row["weight"]),
+                    "confidence": str(row["confidence"]) if row["confidence"] else "explicit",
                     "metadata": json.loads(row["metadata"] or "{}"),
                     "created_at": row["created_at"],
                 }
@@ -9012,8 +9482,8 @@ class MemoryGraph:
         self._require_node(connection, raw_edge["target_id"])
         connection.execute(
             """
-            INSERT INTO edges (id, tenant_id, source_id, target_id, relationship, weight, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO edges (id, tenant_id, source_id, target_id, relationship, weight, confidence, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_edge["id"],
@@ -9022,6 +9492,7 @@ class MemoryGraph:
                 raw_edge["target_id"],
                 raw_edge["relationship"],
                 float(raw_edge.get("weight", 1.0)),
+                str(raw_edge.get("confidence", "explicit")),
                 json.dumps(raw_edge.get("metadata", {})),
                 raw_edge["created_at"],
             ),
@@ -9033,7 +9504,7 @@ class MemoryGraph:
         connection.execute(
             """
             UPDATE edges
-            SET tenant_id = ?, source_id = ?, target_id = ?, relationship = ?, weight = ?, metadata = ?, created_at = ?
+            SET tenant_id = ?, source_id = ?, target_id = ?, relationship = ?, weight = ?, confidence = ?, metadata = ?, created_at = ?
             WHERE id = ? AND tenant_id = ?
             """,
             (
@@ -9042,6 +9513,7 @@ class MemoryGraph:
                 raw_edge["target_id"],
                 raw_edge["relationship"],
                 float(raw_edge.get("weight", 1.0)),
+                str(raw_edge.get("confidence", "explicit")),
                 json.dumps(raw_edge.get("metadata", {})),
                 raw_edge["created_at"],
                 raw_edge["id"],
