@@ -32,6 +32,9 @@ Create `~/.cursor/mcp.json` and add:
 }
 ```
 
+A pre-filled example is available at
+[`examples/cursor_mcp.example.json`](../../examples/cursor_mcp.example.json).
+
 ## Verify
 
 ```bash

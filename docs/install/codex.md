@@ -8,6 +8,8 @@ No cloud account. No API key. Local by default.
 
 ## One-line install
 
+For direct Codex CLI or source-based MCP setup:
+
 ```bash
 pipx install waggle-mcp
 waggle-mcp setup --yes
@@ -21,12 +23,18 @@ the current workspace so Codex can use Waggle from that repo.
 This repository also ships a Codex app plugin manifest at `.codex-plugin/plugin.json`
 with its MCP companion config in `.mcp.json`.
 
-If you are opening this repo directly in the Codex app, those files provide the
-repo-local Waggle plugin metadata and stdio server wiring.
+For the Codex app plugin, Waggle bundles its own plugin-local MCP server runtime.
+Users do not need to install `waggle-mcp` from PyPI separately. The plugin
+launcher resolves a signed executable under `plugins/waggle/runtime/<target>/`
+and starts it with `serve --transport stdio`.
+
+Bundled runtime updates are delivered only through plugin upgrades. If a bundled
+binary is stale or missing, reinstall or upgrade the Waggle Codex plugin.
 
 ## Manual config
 
-Add Waggle to `~/.codex/config.toml`:
+For direct Codex CLI usage outside the bundled app plugin, add Waggle to
+`~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.waggle]

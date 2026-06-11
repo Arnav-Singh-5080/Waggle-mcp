@@ -32,6 +32,9 @@ Treat Antigravity as a generic stdio MCP client:
 }
 ```
 
+A pre-filled example is available at
+[`examples/antigravity_mcp_config.example.json`](../../examples/antigravity_mcp_config.example.json).
+
 ## Verify
 
 ```bash

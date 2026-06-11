@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Security disclosures
-    url: https://github.com/Abhigyan-Shekhar/Waggle-mcp/security/advisories/new
-    about: Please report exploitable vulnerabilities privately.
-  - name: Contributing guide
-    url: https://github.com/Abhigyan-Shekhar/Waggle-mcp/blob/main/CONTRIBUTING.md
-    about: Read setup, testing, and PR expectations before opening larger changes.
