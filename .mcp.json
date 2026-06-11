@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "waggle": {
-      "command": "waggle-mcp",
+      "command": "node",
       "args": [
+        "./plugins/waggle/bin/waggle-server-launcher.js",
         "serve",
         "--transport",
         "stdio"
