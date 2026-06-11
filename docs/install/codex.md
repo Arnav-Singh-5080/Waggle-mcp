@@ -16,6 +16,14 @@ waggle-mcp setup --yes
 `waggle-mcp setup --yes` writes a managed Waggle memory block into `AGENTS.md` in
 the current workspace so Codex can use Waggle from that repo.
 
+## Codex app plugin
+
+This repository also ships a Codex app plugin manifest at `.codex-plugin/plugin.json`
+with its MCP companion config in `.mcp.json`.
+
+If you are opening this repo directly in the Codex app, those files provide the
+repo-local Waggle plugin metadata and stdio server wiring.
+
 ## Manual config
 
 Add Waggle to `~/.codex/config.toml`:

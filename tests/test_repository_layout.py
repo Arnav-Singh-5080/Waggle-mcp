@@ -37,6 +37,8 @@ def test_moved_contributor_files_exist_in_their_canonical_locations() -> None:
 
 def test_registry_and_distribution_manifests_remain_at_repo_root() -> None:
     required_root_files = [
+        ".codex-plugin/plugin.json",
+        ".mcp.json",
         "glama.json",
         "llms-install.txt",
         "server.json",
@@ -45,6 +47,17 @@ def test_registry_and_distribution_manifests_remain_at_repo_root() -> None:
 
     for filename in required_root_files:
         assert (ROOT / filename).exists(), f"{filename} must remain at the repo root"
+
+
+def test_codex_repo_marketplace_and_plugin_entry_exist() -> None:
+    expected_paths = [
+        ROOT / ".agents" / "plugins" / "marketplace.json",
+        ROOT / "plugins" / "waggle" / ".codex-plugin" / "plugin.json",
+        ROOT / "plugins" / "waggle" / ".mcp.json",
+    ]
+
+    for path in expected_paths:
+        assert path.exists(), f"Missing Codex marketplace path: {path.relative_to(ROOT)}"
 
 
 def test_app_surfaces_live_under_apps_directory() -> None:
