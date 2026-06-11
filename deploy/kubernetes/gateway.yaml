@@ -1,0 +1,30 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waggle-gateway
+spec:
+  # Replace with your GatewayClass (examples: traefik, kong, haproxy, nginx)
+  gatewayClassName: CHANGE_ME
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      # Replace with your hostname before applying
+      hostname: waggle.example.com
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      protocol: HTTPS
+      port: 443
+      # Replace with your hostname before applying
+      hostname: waggle.example.com
+      tls:
+        mode: Terminate
+        # cert-manager will create this Secret automatically
+        certificateRefs:
+          - kind: Secret
+            name: waggle-tls
+      allowedRoutes:
+        namespaces:
+          from: Same

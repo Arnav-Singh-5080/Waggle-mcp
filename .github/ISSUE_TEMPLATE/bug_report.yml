@@ -1,0 +1,99 @@
+name: Bug report
+description: Report a reproducible problem in Waggle.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include enough detail for someone new to the codebase to reproduce it.
+        
+        Before you submit:
+        - install Waggle from PyPI: https://pypi.org/project/waggle-mcp/
+        - install the VS Code extension: https://marketplace.visualstudio.com/items?itemName=Abhigyan-Shekhar.waggle-memory
+        - attach a screenshot of the issue
+        
+        Issues without a screenshot will not be considered.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: Briefly describe the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, prompts, or UI steps.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Waggle version
+      placeholder: e.g. 0.0.1
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - pipx
+        - pip
+        - source checkout
+        - VS Code extension
+        - Claude Desktop bundle
+        - other
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, client, and any relevant env vars.
+      placeholder: macOS 14, Python 3.11, Codex desktop, WAGGLE_MODEL=deterministic
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - other
+  - type: textarea
+    id: windows_details
+    attributes:
+      label: Windows-specific details (fill only if on Windows)
+      description: PowerShell version, execution policy, terminal type (CMD/PowerShell/WSL)
+      placeholder: |
+        PowerShell 7.4, execution policy RemoteSigned, Windows Terminal
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot
+      description: Attach or paste a screenshot that shows the issue. Issues without a screenshot will not be considered.
+      placeholder: Paste the screenshot link or drag the screenshot into the issue body.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste the relevant output from `waggle-mcp doctor` or stack traces.

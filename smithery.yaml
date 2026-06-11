@@ -1,0 +1,65 @@
+startCommand:
+  type: stdio
+
+configSchema:
+  type: object
+  description: Configuration for running Waggle as a local-first stdio MCP server.
+  properties:
+    WAGGLE_DEFAULT_TENANT_ID:
+      type: string
+      title: Tenant ID
+      description: Memory namespace or workspace for Waggle.
+      default: local-default
+    WAGGLE_DB_PATH:
+      type: string
+      title: Database Path
+      description: Local SQLite database path.
+      default: ~/.waggle/waggle.db
+    WAGGLE_MODEL:
+      type: string
+      title: Embedding Model
+      description: Sentence-transformers model for local embeddings.
+      default: all-MiniLM-L6-v2
+    WAGGLE_BACKEND:
+      type: string
+      title: Backend
+      description: Backend database type.
+      enum:
+        - sqlite
+        - neo4j
+      default: sqlite
+    WAGGLE_EXPORT_DIR:
+      type: string
+      title: Export Directory
+      description: Local directory for exports and backups.
+      default: ~/.waggle/exports
+    WAGGLE_TRANSPORT:
+      type: string
+      title: Transport
+      description: Transport mode.
+      enum:
+        - stdio
+        - http
+      default: stdio
+
+commandFunction: |
+  (config) => ({
+    command: 'waggle-mcp',
+    args: ['serve', '--transport', config.WAGGLE_TRANSPORT || 'stdio'],
+    env: {
+      WAGGLE_DEFAULT_TENANT_ID: config.WAGGLE_DEFAULT_TENANT_ID || 'local-default',
+      WAGGLE_DB_PATH: config.WAGGLE_DB_PATH || '~/.waggle/waggle.db',
+      WAGGLE_MODEL: config.WAGGLE_MODEL || 'all-MiniLM-L6-v2',
+      WAGGLE_BACKEND: config.WAGGLE_BACKEND || 'sqlite',
+      WAGGLE_TRANSPORT: config.WAGGLE_TRANSPORT || 'stdio',
+      WAGGLE_EXPORT_DIR: config.WAGGLE_EXPORT_DIR || '~/.waggle/exports'
+    }
+  })
+
+exampleConfig:
+  WAGGLE_DEFAULT_TENANT_ID: local-default
+  WAGGLE_DB_PATH: ~/.waggle/waggle.db
+  WAGGLE_MODEL: all-MiniLM-L6-v2
+  WAGGLE_BACKEND: sqlite
+  WAGGLE_TRANSPORT: stdio
+  WAGGLE_EXPORT_DIR: ~/.waggle/exports

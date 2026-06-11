@@ -1,0 +1,97 @@
+---
+# Default deny-all for the namespace.
+# Apply this first, then the explicit allow policies below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow traffic from your Gateway controller namespace to reach waggle on port 8080.
+# Label your gateway namespace with:
+#   networking.waggle.dev/gateway-access=true
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-waggle
+spec:
+  podSelector:
+    matchLabels:
+      app: waggle
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              networking.waggle.dev/gateway-access: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Allow waggle to reach Neo4j on the Bolt port (7687).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-waggle-to-neo4j
+spec:
+  podSelector:
+    matchLabels:
+      app: waggle
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: neo4j
+      ports:
+        - protocol: TCP
+          port: 7687
+
+---
+# Allow waggle to reach kube-dns for name resolution.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-waggle-dns
+spec:
+  podSelector:
+    matchLabels:
+      app: waggle
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Allow Prometheus scrapers (labelled app: prometheus) to reach the
+# /metrics endpoint on port 8080.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+spec:
+  podSelector:
+    matchLabels:
+      app: waggle
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080

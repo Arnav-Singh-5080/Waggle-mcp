@@ -1,0 +1,127 @@
+{
+  "name": "waggle-memory",
+  "displayName": "Waggle: Local Memory for AI Agents",
+  "description": "Local graph memory for coding agents using MCP.",
+  "version": "0.0.2",
+  "publisher": "Abhigyan-Shekhar",
+  "license": "Apache-2.0",
+  "icon": "icon.png",
+  "homepage": "https://github.com/Abhigyan-Shekhar/Waggle-mcp",
+  "bugs": {
+    "url": "https://github.com/Abhigyan-Shekhar/Waggle-mcp/issues"
+  },
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Abhigyan-Shekhar/Waggle-mcp"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "MCP",
+    "AI",
+    "Copilot",
+    "Agents",
+    "Memory",
+    "Knowledge Graph"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:waggle.enableWorkspace",
+    "onCommand:waggle.install",
+    "onCommand:waggle.doctor",
+    "onCommand:waggle.openGraphStudio",
+    "onCommand:waggle.showStatus",
+    "onCommand:waggle.exportMemory",
+    "onCommand:waggle.openInstallDocs"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "waggle.enableWorkspace",
+        "title": "Waggle: Enable for this Workspace"
+      },
+      {
+        "command": "waggle.install",
+        "title": "Waggle: Install Waggle"
+      },
+      {
+        "command": "waggle.doctor",
+        "title": "Waggle: Run Doctor"
+      },
+      {
+        "command": "waggle.openGraphStudio",
+        "title": "Waggle: Open Graph Studio"
+      },
+      {
+        "command": "waggle.showStatus",
+        "title": "Waggle: Show Status"
+      },
+      {
+        "command": "waggle.exportMemory",
+        "title": "Waggle: Export Memory"
+      },
+      {
+        "command": "waggle.openInstallDocs",
+        "title": "Waggle: Open Install Docs"
+      }
+    ],
+    "configuration": {
+      "title": "Waggle",
+      "properties": {
+        "waggle.commandPath": {
+          "type": "string",
+          "default": "waggle-mcp",
+          "description": "Command used to start the Waggle CLI."
+        },
+        "waggle.dbPath": {
+          "type": "string",
+          "default": "~/.waggle/waggle.db",
+          "description": "Default Waggle SQLite database path."
+        },
+        "waggle.tenantId": {
+          "type": "string",
+          "default": "${workspaceFolderBasename}",
+          "description": "Tenant ID used for workspace memory."
+        },
+        "waggle.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reserved for future automatic startup behavior."
+        },
+        "waggle.installMethod": {
+          "type": "string",
+          "default": "pipx",
+          "enum": ["pipx", "binary"],
+          "description": "Preferred install method."
+        },
+        "waggle.mcpConfigScope": {
+          "type": "string",
+          "default": "servers",
+          "enum": ["servers", "mcpServers"],
+          "description": "Root key to use when writing .vscode/mcp.json."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.7.2",
+    "@vscode/vsce": "^3.2.2"
+  }
+}

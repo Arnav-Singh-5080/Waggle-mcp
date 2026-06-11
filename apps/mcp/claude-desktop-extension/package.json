@@ -1,0 +1,13 @@
+{
+  "name": "waggle-claude-desktop-extension",
+  "private": true,
+  "version": "0.0.1",
+  "description": "MCPB packaging helpers for the Waggle Claude Desktop extension.",
+  "scripts": {
+    "pack": "mcpb pack .",
+    "validate": "mcpb validate manifest.json"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "^1.1.0"
+  }
+}

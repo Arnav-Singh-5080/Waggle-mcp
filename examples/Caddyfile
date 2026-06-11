@@ -1,0 +1,3 @@
+{$WAGGLE_DOMAIN} {
+    reverse_proxy waggle:8080
+}

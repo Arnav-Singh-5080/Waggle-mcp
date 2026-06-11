@@ -1,0 +1,20 @@
+[project]
+name = "waggle-plus"
+version = "0.0.1"
+description = "Private Waggle Plus extension package"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Abhigyan Shekhar" }
+]
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

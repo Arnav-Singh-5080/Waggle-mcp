@@ -1,0 +1,219 @@
+<svg viewBox="0 0 760 480" xmlns="http://www.w3.org/2000/svg" font-family="'Fira Code', 'Cascadia Code', 'Menlo', monospace" font-size="13">
+  <defs>
+    <style>
+      .bg   { fill: #0d1117; }
+      .chrome { fill: #161b22; }
+      .border { fill: none; stroke: #30363d; stroke-width: 1; }
+      .dot1 { fill: #ff5f57; }
+      .dot2 { fill: #febc2e; }
+      .dot3 { fill: #28c840; }
+      .prompt { fill: #58a6ff; }
+      .cmd    { fill: #e6edf3; }
+      .muted  { fill: #6e7681; }
+      .cyan   { fill: #39d5cf; }
+      .green  { fill: #3fb950; }
+      .purple { fill: #bc8cff; }
+      .white  { fill: #e6edf3; }
+      .gray   { fill: #8b949e; }
+      .cursor { fill: #58a6ff; }
+
+      /* fade-in animation helper */
+      .line { opacity: 0; }
+
+      /* ── timing ── */
+      /* 0s–0.4s   : shell prompt appears          */
+      .l0  { animation: fadein 0.1s 0.4s forwards; }
+      /* 0.8s      : command types in              */
+      .l1  { animation: fadein 0.1s 0.8s forwards; }
+      /* 1.2s      : blank                        */
+      .l2  { animation: fadein 0.1s 1.2s forwards; }
+      /* 1.4s      : banner line 1                */
+      .l3  { animation: fadein 0.1s 1.4s forwards; }
+      /* 1.6s      : divider                      */
+      .l4  { animation: fadein 0.1s 1.6s forwards; }
+      /* 2.0s      : question 1                   */
+      .l5  { animation: fadein 0.1s 2.0s forwards; }
+      /* 2.3s      : option 1                     */
+      .l6  { animation: fadein 0.1s 2.3s forwards; }
+      /* 2.5s      : option 2                     */
+      .l7  { animation: fadein 0.1s 2.5s forwards; }
+      /* 2.7s      : option 3                     */
+      .l8  { animation: fadein 0.1s 2.7s forwards; }
+      /* 2.9s      : option 4                     */
+      .l9  { animation: fadein 0.1s 2.9s forwards; }
+      /* 3.1s      : prompt line                  */
+      .l10 { animation: fadein 0.1s 3.1s forwards; }
+      /* 3.5s      : user input + selection       */
+      .l11 { animation: fadein 0.1s 3.5s forwards; }
+      /* 3.9s      : blank                        */
+      .l12 { animation: fadein 0.1s 3.9s forwards; }
+      /* 4.1s      : question 2                   */
+      .l13 { animation: fadein 0.1s 4.1s forwards; }
+      /* 4.5s      : path default                 */
+      .l14 { animation: fadein 0.1s 4.5s forwards; }
+      /* 4.9s      : user accepts                 */
+      .l15 { animation: fadein 0.1s 4.9s forwards; }
+      /* 5.3s      : blank                        */
+      .l16 { animation: fadein 0.1s 5.3s forwards; }
+      /* 5.5s      : ok config                    */
+      .l17 { animation: fadein 0.1s 5.5s forwards; }
+      /* 5.8s      : ok db dir                    */
+      .l18 { animation: fadein 0.1s 5.8s forwards; }
+      /* 6.0s      : restart hint                 */
+      .l19 { animation: fadein 0.1s 6.0s forwards; }
+      /* 6.3s      : blank                        */
+      .l20 { animation: fadein 0.1s 6.3s forwards; }
+      /* 6.5s      : next shell prompt (loop cue) */
+      .l21 { animation: fadein 0.1s 6.5s forwards; }
+
+      /* blinking cursor */
+      .blink { animation: blink 1s step-start infinite; }
+
+      @keyframes fadein {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+      }
+      @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0; }
+      }
+    </style>
+  </defs>
+
+  <!-- window background -->
+  <rect width="760" height="480" rx="10" class="bg"/>
+
+  <!-- title bar chrome -->
+  <rect width="760" height="38" rx="10" class="chrome"/>
+  <rect y="28" width="760" height="10" class="chrome"/>
+  <rect width="760" height="1" y="38" class="border"/>
+
+  <!-- traffic lights -->
+  <circle cx="20" cy="19" r="6" class="dot1"/>
+  <circle cx="40" cy="19" r="6" class="dot2"/>
+  <circle cx="60" cy="19" r="6" class="dot3"/>
+
+  <!-- window title -->
+  <text x="380" y="24" text-anchor="middle" class="gray" font-size="12">waggle-mcp — demo</text>
+
+  <!-- ── terminal lines ── -->
+  <!-- y=38 is the chrome bottom; first line at y=62 (24px line-height) -->
+
+  <!-- line 0: shell prompt -->
+  <text y="68" class="line l0">
+    <tspan x="20" class="green">abhigyan</tspan>
+    <tspan class="muted">@mbp</tspan>
+    <tspan class="muted"> ~ </tspan>
+    <tspan class="prompt">❯ </tspan>
+  </text>
+
+  <!-- line 1: command being typed -->
+  <text y="68" class="line l1">
+    <tspan x="20" class="green">abhigyan</tspan>
+    <tspan class="muted">@mbp</tspan>
+    <tspan class="muted"> ~ </tspan>
+    <tspan class="prompt">❯ </tspan>
+    <tspan class="cmd">waggle-mcp init</tspan>
+  </text>
+
+  <!-- line 2: blank -->
+  <text x="20" y="92" class="line l2 white"> </text>
+
+  <!-- line 3: wizard banner -->
+  <text x="20" y="116" class="line l3 white" font-weight="bold">waggle-mcp setup wizard</text>
+
+  <!-- line 4: divider -->
+  <text x="20" y="140" class="line l4 cyan">────────────────────────────────────────</text>
+
+  <!-- line 5: question 1 -->
+  <text x="20" y="172" class="line l5 white" font-weight="bold">Which MCP client are you using?</text>
+
+  <!-- line 6: opt1 -->
+  <text y="196" class="line l6">
+    <tspan x="20" class="cyan">1.</tspan>
+    <tspan class="white"> Claude Desktop</tspan>
+  </text>
+
+  <!-- line 7: opt2 -->
+  <text y="216" class="line l7">
+    <tspan x="20" class="cyan">2.</tspan>
+    <tspan class="white"> Cursor</tspan>
+  </text>
+
+  <!-- line 8: opt3 -->
+  <text y="236" class="line l8">
+    <tspan x="20" class="cyan">3.</tspan>
+    <tspan class="white"> Codex</tspan>
+  </text>
+
+  <!-- line 9: opt4 -->
+  <text y="256" class="line l9">
+    <tspan x="20" class="cyan">4.</tspan>
+    <tspan class="white"> Other</tspan>
+  </text>
+
+  <!-- line 10: input prompt -->
+  <text x="20" y="276" class="line l10 gray">  Enter number [1-4]: </text>
+
+  <!-- line 11: user enters 1 + selected -->
+  <text y="276" class="line l11">
+    <tspan x="20" class="gray">  Enter number [1-4]: </tspan>
+    <tspan class="white">1</tspan>
+  </text>
+  <text y="296" class="line l11">
+    <tspan x="20" class="green">  &gt; </tspan>
+    <tspan class="white">Claude Desktop</tspan>
+  </text>
+
+  <!-- line 12: blank -->
+  <text x="20" y="320" class="line l12 white"> </text>
+
+  <!-- line 13: question 2 -->
+  <text x="20" y="320" class="line l13 white" font-weight="bold">Where should the database be stored?</text>
+
+  <!-- line 14: default path -->
+  <text x="20" y="340" class="line l14 gray">  [~/.graph-memory/memory.db]: </text>
+
+  <!-- line 15: user presses enter, answer shown -->
+  <text y="340" class="line l15">
+    <tspan x="20" class="gray">  [~/.graph-memory/memory.db]: </tspan>
+  </text>
+  <text y="360" class="line l15">
+    <tspan x="20" class="green">  &gt; </tspan>
+    <tspan class="white">~/.graph-memory/memory.db</tspan>
+  </text>
+
+  <!-- line 16: blank -->
+  <text x="20" y="384" class="line l16 white"> </text>
+
+  <!-- line 17: ✅ config written -->
+  <text y="384" class="line l17">
+    <tspan x="20" class="green">  ✅ </tspan>
+    <tspan class="white">Config written to ~/Library/Application Support/Claude/claude_desktop_config.json</tspan>
+  </text>
+
+  <!-- line 18: ✅ db dir -->
+  <text y="404" class="line l18">
+    <tspan x="20" class="green">  ✅ </tspan>
+    <tspan class="white">Database directory ready at ~/.graph-memory</tspan>
+  </text>
+
+  <!-- line 19: restart hint -->
+  <text y="424" class="line l19">
+    <tspan x="20" class="cyan">  ➡  </tspan>
+    <tspan class="white">Restart Claude Desktop to activate.</tspan>
+  </text>
+
+  <!-- line 20: blank -->
+  <text x="20" y="448" class="line l20 white"> </text>
+
+  <!-- line 21: next prompt (steady state) -->
+  <text y="448" class="line l21">
+    <tspan x="20" class="green">abhigyan</tspan>
+    <tspan class="muted">@mbp</tspan>
+    <tspan class="muted"> ~ </tspan>
+    <tspan class="prompt">❯ </tspan>
+    <!-- blinking cursor -->
+    <tspan class="cursor blink">▋</tspan>
+  </text>
+</svg>

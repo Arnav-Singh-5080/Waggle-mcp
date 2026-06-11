@@ -1,0 +1,79 @@
+name: Release Waggle Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            asset_name: waggle-mcp-darwin-arm64
+            executable_name: waggle-mcp-darwin-arm64
+            artifact_path: dist/waggle-mcp-darwin-arm64
+          - runner: macos-13
+            asset_name: waggle-mcp-darwin-x64
+            executable_name: waggle-mcp-darwin-x64
+            artifact_path: dist/waggle-mcp-darwin-x64
+          - runner: ubuntu-latest
+            asset_name: waggle-mcp-linux-x64
+            executable_name: waggle-mcp-linux-x64
+            artifact_path: dist/waggle-mcp-linux-x64
+          - runner: windows-latest
+            asset_name: waggle-mcp-windows-x64.exe
+            executable_name: waggle-mcp-windows-x64
+            artifact_path: dist/waggle-mcp-windows-x64.exe
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install . pyinstaller
+
+      - name: Build standalone binary
+        shell: bash
+        run: |
+          pyinstaller \
+            --clean \
+            --onefile \
+            --name "${{ matrix.executable_name }}" \
+            --collect-all waggle \
+            src/waggle/server.py
+
+      - name: Smoke test binary
+        shell: bash
+        run: |
+          "${{ matrix.artifact_path }}" --help
+          "${{ matrix.artifact_path }}" doctor --help
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.artifact_path }}
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_path }}
+          fail_on_unmatched_files: true

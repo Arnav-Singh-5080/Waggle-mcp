@@ -1,0 +1,64 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Abhigyan-Shekhar/Waggle-mcp",
+  "description": "Persistent graph-backed conversational memory for AI agents.",
+  "repository": {
+    "url": "https://github.com/Abhigyan-Shekhar/Waggle-mcp",
+    "source": "github"
+  },
+  "version": "0.1.8",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "waggle-mcp",
+      "version": "0.1.8",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "WAGGLE_TRANSPORT",
+          "description": "Transport mode for the MCP server.",
+          "isRequired": false,
+          "format": "string",
+          "default": "stdio"
+        },
+        {
+          "name": "WAGGLE_BACKEND",
+          "description": "Backend database type: sqlite for local use or neo4j for service deployments.",
+          "isRequired": false,
+          "format": "string",
+          "default": "sqlite"
+        },
+        {
+          "name": "WAGGLE_DB_PATH",
+          "description": "Path to the SQLite memory database when WAGGLE_BACKEND is sqlite.",
+          "isRequired": false,
+          "format": "string",
+          "default": "~/.waggle/waggle.db"
+        },
+        {
+          "name": "WAGGLE_DEFAULT_TENANT_ID",
+          "description": "Default tenant ID for local or shared memory isolation.",
+          "isRequired": false,
+          "format": "string",
+          "default": "local-default"
+        },
+        {
+          "name": "WAGGLE_API_KEY_ENVIRONMENT",
+          "description": "Generated API key prefix environment: test/local for non-production or live for production.",
+          "isRequired": false,
+          "format": "string",
+          "default": "test"
+        },
+        {
+          "name": "WAGGLE_MODEL",
+          "description": "Sentence-transformers model used for local embeddings.",
+          "isRequired": false,
+          "format": "string",
+          "default": "all-MiniLM-L6-v2"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# waggle-mcp
+
+pip install waggle-mcp
+waggle-mcp init
