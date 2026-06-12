@@ -92,8 +92,8 @@ from waggle.recursive_context import (
     RECURSIVE_CONTEXT_ENABLED,
     RecursiveContextController,
 )
-from waggle.runtime_info import SERVER_NAME, WAGGLE_SERVER_INFO, server_info_json
 from waggle.runtime_context import runtime_context
+from waggle.runtime_info import SERVER_NAME, WAGGLE_SERVER_INFO
 from waggle.serializer import (
     serialize_abhi_chunk_load,
     serialize_abhi_inspect,
