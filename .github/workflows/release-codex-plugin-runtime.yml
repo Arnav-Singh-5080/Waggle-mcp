@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-runtime:
@@ -20,7 +20,7 @@ jobs:
           - runner: macos-14
             target: darwin-arm64
             artifact: waggle-server
-          - runner: macos-13
+          - runner: macos-15-intel
             target: darwin-x86_64
             artifact: waggle-server
           - runner: ubuntu-latest
@@ -35,6 +35,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -102,8 +104,12 @@ jobs:
     name: Assemble runtime layout
     runs-on: ubuntu-latest
     needs: build-runtime
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download runtime artifacts
         uses: actions/download-artifact@v4
@@ -121,6 +127,11 @@ jobs:
             find "$artifact_dir" -mindepth 1 -maxdepth 1 -exec mv {} "plugins/waggle/runtime/${target}/" \;
             rmdir "$artifact_dir"
           done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Validate assembled runtime layout
         run: python scripts/build_codex_plugin_runtime.py --require-artifacts
