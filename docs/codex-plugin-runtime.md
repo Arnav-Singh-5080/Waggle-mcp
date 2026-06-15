@@ -43,6 +43,18 @@ waggle-server serve --transport stdio
 waggle-server --server-info
 ```
 
+## Release Packaging
+
+The release workflow packages two downloadable Codex assets after the runtime
+layout is assembled and validated:
+
+- `waggle-codex-marketplace-<tag>.zip`: a complete local marketplace root with
+  `.agents/plugins/marketplace.json` plus `plugins/waggle/`
+- `waggle-codex-plugin-<tag>.zip`: the bare `plugins/waggle/` plugin folder
+
+The marketplace bundle is the primary install artifact because Codex can add it
+directly with `codex plugin marketplace add /path/to/extracted-bundle`.
+
 ## Release Validation
 
 Before packaging a plugin release, assemble all platform artifacts and run:

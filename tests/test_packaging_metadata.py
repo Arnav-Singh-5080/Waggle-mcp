@@ -72,6 +72,7 @@ def test_graph_ui_bundle_contains_expected_static_assets() -> None:
         + ". Rebuild or restore src/waggle/static/graph before packaging."
     )
 
+
 def test_bundled_server_info_is_versioned() -> None:
     from waggle.runtime_info import WAGGLE_SERVER_INFO
 
@@ -79,6 +80,7 @@ def test_bundled_server_info_is_versioned() -> None:
     assert WAGGLE_SERVER_INFO["version"] == waggle.__version__
     assert WAGGLE_SERVER_INFO["minimum_supported_protocol_version"]
     assert WAGGLE_SERVER_INFO["runtime_scope"] == "mcp-server-stdio"
+
 
 def _extract_toml_fence(markdown: str, *, expected_table: str) -> str:
     for match in re.finditer(r"```toml\n(.*?)\n```", markdown, re.DOTALL):

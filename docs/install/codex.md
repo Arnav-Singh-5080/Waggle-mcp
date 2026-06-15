@@ -31,6 +31,22 @@ and starts it with `serve --transport stdio`.
 Bundled runtime updates are delivered only through plugin upgrades. If a bundled
 binary is stale or missing, reinstall or upgrade the Waggle Codex plugin.
 
+Tagged Waggle releases now publish two Codex plugin assets:
+
+- `waggle-codex-marketplace-<tag>.zip`: a complete local marketplace root that
+  can be added with `codex plugin marketplace add`
+- `waggle-codex-plugin-<tag>.zip`: the bare `plugins/waggle` plugin folder
+
+For the easiest install path, download and extract the marketplace bundle, then
+run:
+
+```bash
+codex plugin marketplace add /path/to/waggle-codex-marketplace-<tag>
+```
+
+After that, refresh the plugin directory in Codex and install `Waggle` from the
+added marketplace.
+
 ## Manual config
 
 For direct Codex CLI usage outside the bundled app plugin, add Waggle to
