@@ -40,12 +40,12 @@ For direct Codex CLI usage outside the bundled app plugin, add Waggle to
 [mcp_servers.waggle]
 command = "waggle-mcp"
 args = ["serve", "--transport", "stdio"]
-env = {
-  WAGGLE_BACKEND = "sqlite",
-  WAGGLE_DB_PATH = "~/.waggle/waggle.db",
-  WAGGLE_DEFAULT_TENANT_ID = "local-default",
-  WAGGLE_MODEL = "all-MiniLM-L6-v2"
-}
+
+[mcp_servers.waggle.env]
+WAGGLE_BACKEND = "sqlite"
+WAGGLE_DB_PATH = "~/.waggle/waggle.db"
+WAGGLE_DEFAULT_TENANT_ID = "local-default"
+WAGGLE_MODEL = "all-MiniLM-L6-v2"
 ```
 
 A pre-filled example is available at
