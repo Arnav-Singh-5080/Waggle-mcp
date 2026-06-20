@@ -254,3 +254,33 @@ class TestUnifiedQuery:
         graph.add_node(label="lunch decision", content="we chose tacos for the team lunch", node_type=NodeType.DECISION)
         result = graph.query(query="what did we decide for lunch", max_nodes=5, retrieval_mode="graph")
         assert any("lunch" in n.label.lower() for n in result.nodes)
+
+
+class TestGetRelatedReverseEdge:
+    """Regression: get_related must not crash on reverse-direction edges.
+
+    A derived_from edge B->A means A is reachable from B but not vice versa in
+    the directed graph. get_related(A) expands to include B (a predecessor), and
+    the distance calc must use the undirected view to avoid NetworkXNoPath.
+    """
+
+    def test_get_related_with_reverse_edge(self, tmp_path: Path) -> None:
+        graph = make_graph(tmp_path)
+        a = graph.add_node(label="target", content="target node", node_type=NodeType.FACT).node.id
+        b = graph.add_node(label="source", content="source node", node_type=NodeType.CONCEPT).node.id
+        # Edge points B -> A (reverse relative to querying from A)
+        graph.add_edge(source_id=b, target_id=a, relationship="derived_from")
+
+        result = graph.get_related(node_id=a, max_depth=2)
+        node_ids = {n.id for n in result.nodes}
+        assert a in node_ids
+        assert b in node_ids  # predecessor included, no crash
+
+    def test_get_node_history_with_reverse_edge(self, tmp_path: Path) -> None:
+        graph = make_graph(tmp_path)
+        a = graph.add_node(label="anchor", content="anchor", node_type=NodeType.FACT).node.id
+        b = graph.add_node(label="derived", content="derived", node_type=NodeType.CONCEPT).node.id
+        graph.add_edge(source_id=b, target_id=a, relationship="derived_from")
+        # Should not raise
+        history = graph.get_node_history(node_id=a, max_depth=2)
+        assert history.node.id == a

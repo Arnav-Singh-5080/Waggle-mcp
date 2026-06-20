@@ -4092,8 +4092,19 @@ class MemoryGraph:
 
             edges = self._fetch_edges_for_nodes(connection, [node.id for node in ordered_nodes])
             now = time.time()
+            # Distance is measured on the undirected view: _expand_node_depths
+            # reaches predecessors too, so a directed shortest_path_length would
+            # raise NetworkXNoPath for nodes connected only by a reverse edge
+            # (e.g. a derived_from edge from a Graphify import).
+            undirected_graph = graph.to_undirected(as_view=True)
             for node in ordered_nodes:
-                distance = 0 if node.id == node_id else nx.shortest_path_length(graph, source=node_id, target=node.id)
+                if node.id == node_id:
+                    distance = 0
+                else:
+                    try:
+                        distance = nx.shortest_path_length(undirected_graph, source=node_id, target=node.id)
+                    except (nx.NetworkXNoPath, nx.NodeNotFound):
+                        distance = max_depth + 1
                 edge_weight = self._strongest_edge_weight(node.id, edges)
                 similarity = max(0.0, 1.0 - (0.25 * distance))
                 self._apply_node_score(node, similarity=similarity, edge_weight=edge_weight, now=now)
