@@ -111,7 +111,7 @@ def test_ensure_encoded_is_idempotent():
     assert once == twice
 
 
-# ── storage-level tests (acceptance criteria 1-4) ──────────────────────────────
+# ── Storage-level tests (covers acceptance criteria 1-4) ──────────────────────────────
 
 
 def test_new_writes_are_checksummed(tmp_path: Path):
@@ -206,7 +206,7 @@ def test_legacy_embedding_still_reads_correctly(tmp_path: Path):
     assert graph._node_cosine_similarity(node_a, node_b) is not None
 
 
-# ── context_windows coverage (reviewer follow-up on #71) ───────────────────────
+# ── Context_windows coverage ───────────────────────
 
 
 def _window_embedding_blob(graph: MemoryGraph, window_id: str) -> bytes | None:
@@ -310,7 +310,7 @@ def test_window_legacy_row_is_migrated(tmp_path: Path):
     assert decode_embedding_blob(blob) == raw
 
 
-# ── multi-tenant scoping + crash-safety (second review round) ───────────────────
+# ── Multi-tenant scoping + crash-safety ───────────────────
 
 
 def test_health_and_clear_are_tenant_scoped(tmp_path: Path):
@@ -382,7 +382,7 @@ def test_multi_intent_query_survives_corrupt_embedding(tmp_path: Path):
     assert result is not None
 
 
-# ── decode hardening: corrupted magic, misaligned payload, deserialization (review 3) ─
+# ── Decode hardening: corrupted magic, misaligned payload, deserialization ─
 
 
 def _corrupt_node_magic(graph: MemoryGraph, node_id: str) -> None:
@@ -444,3 +444,122 @@ def test_migration_does_not_launder_corrupt_magic(tmp_path: Path):
     graph.migrate_embeddings_to_checksummed()
     assert decode_embedding_blob(_node_embedding_blob(graph, node.id)) is None
     assert graph.get_embedding_store_health()["node_checksum_failures"] == 1
+
+
+# ── Import / backfill validation ─────────────────────────────────────
+
+
+def _make_node_blob(values: list[float]) -> bytes:
+    return np.asarray(values, dtype=np.float32).tobytes()
+
+
+def test_coerce_imported_embedding_wraps_legacy_and_keeps_metadata(tmp_path: Path):
+    graph = make_graph(tmp_path)
+    legacy = _make_node_blob([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
+    blob, model_id, dim = graph._coerce_imported_embedding(legacy, text="ignored", model_id="snap-model", dim=8)
+    assert is_checksummed_embedding(blob)
+    assert decode_embedding_blob(blob) == legacy
+    assert (model_id, dim) == ("snap-model", 8)  # supplied metadata preserved
+
+
+def test_coerce_imported_embedding_reembeds_corrupt(tmp_path: Path):
+    graph = make_graph(tmp_path)
+    good = encode_embedding_blob(_make_node_blob([0.0] * 8))
+    corrupt = bytearray(good)
+    corrupt[len(EMBEDDING_BLOB_MAGIC) + 1] ^= 0xFF  # break the CRC
+    blob, model_id, dim = graph._coerce_imported_embedding(
+        bytes(corrupt), text="some content", model_id="snap-model", dim=8
+    )
+    # Corrupt blob is not persisted as-is: it is re-embedded with the live model.
+    assert decode_embedding_blob(blob) is not None
+    assert model_id == graph._current_embedding_model_id()
+    assert dim == 8
+
+
+def test_snapshot_node_import_validates_and_converts(tmp_path: Path):
+    source = make_graph(tmp_path / "src")
+    node = source.add_node(label="N", content="snapshot me", node_type=NodeType.ENTITY).node
+    legacy_raw = decode_embedding_blob(_node_embedding_blob(source, node.id))
+
+    target = MemoryGraph(tmp_path / "dst" / "memory.db", FakeEmbeddingModel())
+    now = "2025-01-01T00:00:00+00:00"
+    common = {
+        "id": node.id,
+        "label": "N",
+        "content": "snapshot me",
+        "node_type": NodeType.ENTITY.value,
+        "embedding_model_id": "snap-model",
+        "embedding_dim": 8,
+        "created_at": now,
+        "updated_at": now,
+    }
+    with target._lock, target._pool.checkout() as conn:
+        # Legacy blob supplied by the snapshot -> stored checksummed.
+        target._insert_snapshot_node(conn, {**common, "embedding": legacy_raw})
+        stored = conn.execute("SELECT embedding FROM nodes WHERE id = ?", (node.id,)).fetchone()["embedding"]
+    assert is_checksummed_embedding(bytes(stored))
+    assert decode_embedding_blob(bytes(stored)) == legacy_raw
+    assert target.get_embedding_store_health()["node_checksum_failures"] == 0
+
+
+def test_snapshot_node_import_reembeds_corrupt(tmp_path: Path):
+    target = make_graph(tmp_path)
+    good = encode_embedding_blob(_make_node_blob([0.0] * 8))
+    corrupt = bytearray(good)
+    corrupt[len(EMBEDDING_BLOB_MAGIC) + 1] ^= 0xFF
+    now = "2025-01-01T00:00:00+00:00"
+    raw_node = {
+        "id": "imported-1",
+        "label": "N",
+        "content": "rebuild me from text",
+        "node_type": NodeType.ENTITY.value,
+        "embedding": bytes(corrupt),
+        "embedding_model_id": "snap-model",
+        "embedding_dim": 8,
+        "created_at": now,
+        "updated_at": now,
+    }
+    with target._lock, target._pool.checkout() as conn:
+        target._insert_snapshot_node(conn, raw_node)
+    health = target.get_embedding_store_health()
+    assert health["node_checksum_failures"] == 0
+    assert health["node_legacy_rows"] == 0
+
+
+def test_transcript_backfill_reembeds_damaged_checksummed_blob(tmp_path: Path):
+    graph = make_graph(tmp_path)
+    graph.observe_conversation(
+        user_message="the codeword is saffron",
+        assistant_response="noted, saffron",
+        project="p",
+        session_id="s",
+    )
+    # Damage the magic of a transcript embedding but keep model_id/dim, and blank
+    # turn_pair_id so the backfill re-selects the row and hits the copy-through path.
+    with sqlite3.connect(graph.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, embedding FROM transcript_records WHERE embedding IS NOT NULL LIMIT 1"
+        ).fetchone()
+        tid = row["id"]
+        damaged = bytearray(bytes(row["embedding"]))
+        damaged[0] ^= 0xFF  # corrupt the magic
+        conn.execute(
+            "UPDATE transcript_records SET embedding = ?, turn_pair_id = '' WHERE id = ?",
+            (bytes(damaged), tid),
+        )
+        conn.commit()
+
+    # Reopen: _migrate_legacy_schema runs the backfill, which must re-embed (not
+    # wrap) the damaged blob, leaving no checksum failure or laundered legacy row.
+    reopened = MemoryGraph(graph.db_path, FakeEmbeddingModel())
+    with sqlite3.connect(reopened.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        stored = conn.execute("SELECT embedding FROM transcript_records WHERE id = ?", (tid,)).fetchone()["embedding"]
+    decoded = decode_embedding_blob(bytes(stored))
+    assert decoded is not None
+    # A re-embed yields a clean 8-dim float32 vector (32 bytes). Wrapping the
+    # damaged blob as "legacy" would instead decode to the 40-byte laundered blob,
+    # so the exact length is what distinguishes re-embed from launder.
+    assert len(decoded) == 8 * np.dtype(np.float32).itemsize
+    assert reopened.get_embedding_store_health()["transcript_checksum_failures"] == 0

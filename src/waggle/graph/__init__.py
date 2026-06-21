@@ -1594,6 +1594,12 @@ class MemoryGraph(TranscriptMixin, TraversalMixin, MutationMixin, MemoryGraphBas
                 ):
                     embedding, model_id, dim = self._embed_with_metadata(row["transcript_text"])
                     embedding_bytes = self._encode_embedding(embedding)
+                elif self._decode_embedding(row["embedding"]) is None:
+                    # Existing blob fails validation (CRC mismatch or damaged magic).
+                    # Re-embed rather than wrap it — `_ensure_encoded_embedding` would
+                    # otherwise launder a damaged checksummed blob into a "legacy" one.
+                    embedding, model_id, dim = self._embed_with_metadata(row["transcript_text"])
+                    embedding_bytes = self._encode_embedding(embedding)
                 else:
                     model_id = str(row["embedding_model_id"] or "").strip()
                     dim = int(row["embedding_dim"] or 0)
@@ -4476,13 +4482,32 @@ class MemoryGraph(TranscriptMixin, TraversalMixin, MutationMixin, MemoryGraphBas
             )
         return snapshot
 
+    def _coerce_imported_embedding(
+        self, embedding: Any, *, text: str, model_id: str, dim: int
+    ) -> tuple[bytes, str, int]:
+        """Normalise an imported/snapshot embedding blob for persistence (issue #71).
+
+        Imported blobs arrive from another store (or off disk) and were previously
+        written verbatim, so a legacy blob stayed un-checksummed and a corrupt blob
+        was persisted as-is and never re-embedded. This validates first:
+
+        * a supplied blob that decodes (legacy or checksummed) → canonical
+          checksummed form, keeping the supplied ``model_id``/``dim``;
+        * a missing or corrupt blob → re-embed from ``text`` (a fresh checksummed
+          vector with the current model id/dim).
+        """
+        if isinstance(embedding, (bytes, bytearray)) and decode_embedding_blob(bytes(embedding)) is not None:
+            return self._ensure_encoded_embedding(bytes(embedding)), model_id, dim
+        vector, new_model_id, new_dim = self._embed_with_metadata(text)
+        return self._encode_embedding(vector), new_model_id, new_dim
+
     def _insert_snapshot_node(self, connection: sqlite3.Connection, raw_node: dict[str, Any]) -> None:
-        embedding = raw_node.get("embedding")
-        embedding_model_id = str(raw_node.get("embedding_model_id", "") or "")
-        embedding_dim = int(raw_node.get("embedding_dim", 0) or 0)
-        if embedding is None:
-            embedding_vector, embedding_model_id, embedding_dim = self._embed_with_metadata(raw_node["content"])
-            embedding = self._encode_embedding(embedding_vector)
+        embedding, embedding_model_id, embedding_dim = self._coerce_imported_embedding(
+            raw_node.get("embedding"),
+            text=raw_node["content"],
+            model_id=str(raw_node.get("embedding_model_id", "") or ""),
+            dim=int(raw_node.get("embedding_dim", 0) or 0),
+        )
         connection.execute(
             """
             INSERT INTO nodes (
@@ -4520,14 +4545,12 @@ class MemoryGraph(TranscriptMixin, TraversalMixin, MutationMixin, MemoryGraphBas
         )
 
     def _insert_snapshot_transcript(self, connection: sqlite3.Connection, raw_transcript: dict[str, Any]) -> None:
-        embedding = raw_transcript.get("embedding")
-        embedding_model_id = str(raw_transcript.get("embedding_model_id", "") or "")
-        embedding_dim = int(raw_transcript.get("embedding_dim", 0) or 0)
-        if embedding is None:
-            embedding_vector, embedding_model_id, embedding_dim = self._embed_with_metadata(
-                raw_transcript["transcript_text"]
-            )
-            embedding = self._encode_embedding(embedding_vector)
+        embedding, embedding_model_id, embedding_dim = self._coerce_imported_embedding(
+            raw_transcript.get("embedding"),
+            text=raw_transcript["transcript_text"],
+            model_id=str(raw_transcript.get("embedding_model_id", "") or ""),
+            dim=int(raw_transcript.get("embedding_dim", 0) or 0),
+        )
         connection.execute(
             """
             INSERT INTO transcript_records (
@@ -4557,14 +4580,12 @@ class MemoryGraph(TranscriptMixin, TraversalMixin, MutationMixin, MemoryGraphBas
         )
 
     def _update_snapshot_transcript(self, connection: sqlite3.Connection, raw_transcript: dict[str, Any]) -> None:
-        embedding = raw_transcript.get("embedding")
-        embedding_model_id = str(raw_transcript.get("embedding_model_id", "") or "")
-        embedding_dim = int(raw_transcript.get("embedding_dim", 0) or 0)
-        if embedding is None:
-            embedding_vector, embedding_model_id, embedding_dim = self._embed_with_metadata(
-                raw_transcript["transcript_text"]
-            )
-            embedding = self._encode_embedding(embedding_vector)
+        embedding, embedding_model_id, embedding_dim = self._coerce_imported_embedding(
+            raw_transcript.get("embedding"),
+            text=raw_transcript["transcript_text"],
+            model_id=str(raw_transcript.get("embedding_model_id", "") or ""),
+            dim=int(raw_transcript.get("embedding_dim", 0) or 0),
+        )
         connection.execute(
             """
             UPDATE transcript_records
@@ -4681,12 +4702,12 @@ class MemoryGraph(TranscriptMixin, TraversalMixin, MutationMixin, MemoryGraphBas
         )
 
     def _update_snapshot_node(self, connection: sqlite3.Connection, raw_node: dict[str, Any]) -> None:
-        embedding = raw_node.get("embedding")
-        embedding_model_id = str(raw_node.get("embedding_model_id", "") or "")
-        embedding_dim = int(raw_node.get("embedding_dim", 0) or 0)
-        if embedding is None:
-            embedding_vector, embedding_model_id, embedding_dim = self._embed_with_metadata(raw_node["content"])
-            embedding = self._encode_embedding(embedding_vector)
+        embedding, embedding_model_id, embedding_dim = self._coerce_imported_embedding(
+            raw_node.get("embedding"),
+            text=raw_node["content"],
+            model_id=str(raw_node.get("embedding_model_id", "") or ""),
+            dim=int(raw_node.get("embedding_dim", 0) or 0),
+        )
         connection.execute(
             """
             UPDATE nodes
