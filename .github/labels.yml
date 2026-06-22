@@ -139,4 +139,3 @@
 - name: dependencies
   color: "0366d6"
   description: Updates or changes related to project dependencies.
-  
