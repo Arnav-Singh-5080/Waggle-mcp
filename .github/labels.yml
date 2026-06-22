@@ -124,4 +124,19 @@
 - name: hard
   color: "d93f0b"
   description: Hard difficulty issue for contributors.
- 
+ - name: duplicate
+  color: "cfd3d7"
+  description: This issue or pull request already exists elsewhere.
+- name: wontfix
+  color: "ffffff"
+  description: This will not be worked on or accepted.
+- name: invalid
+  color: "e4e669"
+  description: Report or request is not valid.
+- name: stale
+  color: "fef2c0"
+  description: No recent activity and may be closed if inactive.
+- name: dependencies
+  color: "0366d6"
+  description: Updates or changes related to project dependencies.
+  
