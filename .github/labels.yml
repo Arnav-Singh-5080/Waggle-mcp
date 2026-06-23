@@ -124,7 +124,7 @@
 - name: hard
   color: "d93f0b"
   description: Hard difficulty issue for contributors.
- - name: duplicate
+- name: duplicate
   color: "cfd3d7"
   description: This issue or pull request already exists elsewhere.
 - name: wontfix
